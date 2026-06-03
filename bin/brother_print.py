@@ -142,36 +142,29 @@ def _recv_some(sock, timeout):
         sock.settimeout(old)
 
 
-def _exchange(sock, msg, timeout=IO_TIMEOUT):
-    """Send a message and read one response."""
-    _send(sock, XML_DECL + msg)
-    return _recv_some(sock, timeout)
+def _read_reply(sock, timeout, terminators=(b"</status>", b"</lock>", b"</config>")):
+    """Accumulate bytes until a full XML reply (one of `terminators`) arrives.
 
-
-def _wait_for(sock, needles, timeout, required=True):
-    """Accumulate responses until one of `needles` (or 'error') appears.
-
-    Returns the accumulated bytes. Raises PrinterError on a reported error, or
-    on timeout when `required` is True. When `required` is False, a timeout just
-    returns what we have (some firmwares stream without an explicit ack)."""
-    if isinstance(needles, str):
-        needles = [needles]
-    needles = [n.lower().encode() for n in needles]
+    The printer frames every command reply in <status>/<lock>/<config>…; reading
+    to the terminator avoids the partial-recv races that left jobs half-sent."""
     buf = b""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        chunk = _recv_some(sock, min(5.0, max(0.5, deadline - time.monotonic())))
-        if chunk:
-            buf += chunk
-            low = buf.lower()
-            err = xml_field(buf, "print_job_error")
-            if (b"error" in low and b"none" not in low) or (err and err not in ("NONE", "0")):
-                raise PrinterError(f"printer reported error: {buf[:300]!r}")
-            if any(n in low for n in needles):
-                return buf
-    if required:
-        raise PrinterError(f"timed out waiting for {needles}; got {buf[:300]!r}")
+        chunk = _recv_some(sock, min(5.0, max(0.3, deadline - time.monotonic())))
+        if not chunk:
+            if buf:
+                break
+            continue
+        buf += chunk
+        if any(t in buf for t in terminators):
+            break
     return buf
+
+
+def _exchange(sock, msg, timeout=IO_TIMEOUT):
+    """Send a message and read one complete reply."""
+    _send(sock, XML_DECL + msg)
+    return _read_reply(sock, timeout)
 
 
 def _close(sock):
@@ -232,39 +225,50 @@ def send(image, *, mode=DEFAULT_MODE, cut="full", timeout=IO_TIMEOUT, flip=None)
         raise ValueError(f"unknown mode {mode!r}; choose from {sorted(MODES)}")
     jpeg = convert_to_jpeg(image, flip=flip).read_bytes()
 
+    name = pathlib.Path(image).name
     host = resolve_host()
     sock = socket.create_connection((host, PORT), timeout=CONNECT_TIMEOUT)
     sock.settimeout(timeout)
     token = None
-    log_event("start", f"{pathlib.Path(image).name} mode={mode} cut={cut} bytes={len(jpeg)}")
+    image_sent = False
+    log_event("start", f"{name} mode={mode} cut={cut} bytes={len(jpeg)}")
     try:
-        # 1. acquire the job lock
+        # 1. acquire the job lock — we MUST get a token so we can release it.
         resp = _exchange(sock, build_lock_set(), timeout)
         token = xml_field(resp, "job_token")
+        if not token:
+            raise PrinterError(f"could not acquire print lock: {resp[:200]!r}")
 
-        # 2. print metadata block (its own write; ends in </print>)
-        _send(sock, XML_DECL + build_print_header(mode, len(jpeg), cut))
+        # 2. send the print metadata block (ends in </print>) and read the reply.
+        hdr_resp = _exchange(sock, build_print_header(mode, len(jpeg), cut), timeout=15.0)
+        code = xml_field(hdr_resp, "code")
+        comment = (xml_field(hdr_resp, "comment") or "").lower()
+        ready = "ready" in comment or "receive" in comment
+        # CRITICAL: never stream image bytes unless the printer asked for them.
+        # Declaring a datasize then not delivering is what wedges the firmware.
+        if not ready:
+            if code not in (None, "0"):
+                raise PrinterError(f"printer not ready (code {code}: {comment or hdr_resp[:160]!r})")
+            # No explicit error but no "ready" either — give it one more read.
+            more = _read_reply(sock, 8.0)
+            if "ready" not in (xml_field(more, "comment") or "").lower():
+                raise PrinterError(f"printer did not signal ready: {(hdr_resp + more)[:200]!r}")
 
-        # 3. wait for the printer to say it's ready (best-effort)
-        _wait_for(sock, ["ready to receive", "ready"], timeout=15.0, required=False)
-
-        # 4. stream the image bytes
+        # 3. stream the full image (one write; all datasize bytes).
         _send(sock, jpeg)
+        image_sent = True
 
-        # 5. wait for completion
-        result = _wait_for(
-            sock,
-            ["print data received", "picture received", "print finished",
-             "<print_job_stage>success", "<code>0"],
-            timeout=timeout,
-            required=True,
+        # 4. wait for completion.
+        result = _read_reply(
+            sock, timeout,
+            terminators=(b"received", b"success", b"finished", b"</status>"),
         )
-        log_event("done", pathlib.Path(image).name)
+        log_event("done", name)
         if cut and cut != "none":
             log_event("cut", "auto-cut")
         return result
     except Exception as e:
-        log_event("error", f"{pathlib.Path(image).name}: {e}")
+        log_event("error", f"{name}: {e} (image_sent={image_sent})")
         raise
     finally:
         # 6. ALWAYS release the lock — this is what prevents stuck-BUSY.
