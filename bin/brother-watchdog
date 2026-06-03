@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Re-enable the brother CUPS queue when the printer is reachable but the queue
+# is disabled. Only relevant for the LABEL_USE_CUPS fallback path; harmless
+# otherwise. Probes the mDNS name first, then the last-known IP.
+QUEUE="brother"
+HOSTS=("VC-500W3904.local" "192.168.8.249")
+PORT=9100
+
+reachable() {
+    for h in "${HOSTS[@]}"; do
+        if timeout 3 bash -c "echo >/dev/tcp/$h/$PORT" 2>/dev/null; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+reachable || exit 0
+
+if lpstat -p "$QUEUE" 2>/dev/null | grep -q "disabled"; then
+    echo "brother-watchdog: printer reachable but queue disabled — re-enabling"
+    cupsenable "$QUEUE"
+fi

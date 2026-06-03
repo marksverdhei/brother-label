@@ -1,0 +1,9 @@
+[Unit]
+Description=Brother VC-500W network keepalive (hold WiFi association)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/me/lan-devices/brother-label/bin/brother-keepalive
+User=me

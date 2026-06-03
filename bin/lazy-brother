@@ -1,0 +1,318 @@
+#!/usr/bin/env python3
+"""lazy-brother — btop-style TUI for the Brother VC-500W label printer.
+
+Top: live status + tape gauge.
+Bottom: native print-event log (job start / cut / done / error from cache/print.log).
+Ctrl-C to quit.
+"""
+
+import os
+import pathlib
+import subprocess
+import sys
+import threading
+import time
+from collections import deque
+from datetime import datetime
+
+from rich.align import Align
+from rich.console import Console, Group
+from rich.layout import Layout
+from rich.live import Live
+from rich.panel import Panel
+from rich.progress_bar import ProgressBar
+from rich.table import Table
+from rich.text import Text
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import brother_print
+
+PRINTER_IP = brother_print.PRINTER_IP
+QUEUE = "brother"
+REFRESH_HZ = 2
+USE_CUPS = os.environ.get("LABEL_USE_CUPS") == "1"
+PRINT_LOG = brother_print.PRINT_LOG
+
+console = Console()
+
+
+def zink_query(path: str, timeout: float = 3.0) -> bytes:
+    return brother_print.query(path, timeout=timeout)
+
+
+def xml_field(blob: bytes, tag: str) -> str | None:
+    return brother_print.xml_field(blob, tag)
+
+
+class State:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.status_xml: bytes = b""
+        self.config_xml: bytes = b""
+        self.queue_text: str = ""
+        self.last_poll: float = 0
+        self.error: str | None = None
+        self.events: deque = deque(maxlen=200)
+
+
+def poll_loop(state: State, stop: threading.Event):
+    while not stop.is_set():
+        try:
+            status = zink_query("/status.xml")
+            cfg = zink_query("/config.xml")
+            q = ""
+            if USE_CUPS:
+                q = subprocess.run(
+                    ["lpstat", "-W", "not-completed", "-o", QUEUE],
+                    capture_output=True, text=True, timeout=4,
+                ).stdout.strip()
+            with state.lock:
+                state.status_xml = status
+                state.config_xml = cfg
+                state.queue_text = q
+                state.last_poll = time.time()
+                state.error = None
+        except Exception as e:
+            with state.lock:
+                state.error = str(e)
+                state.last_poll = time.time()
+        stop.wait(2.0)
+
+
+# kind (from brother_print.log_event) -> (display label, event class for coloring)
+_LOG_KIND = {
+    "start": ("PRINT", "PRINT"),
+    "done": ("DONE", "JOB"),
+    "cut": ("CUT", "CUT"),
+    "error": ("ERROR", "WARN"),
+}
+
+
+def print_log_tail(state: State, stop: threading.Event):
+    """Tail the native print log (cache/print.log) for job events."""
+    path = PRINT_LOG
+    # seed position at current EOF so we only show new events
+    pos = path.stat().st_size if path.exists() else 0
+    while not stop.is_set():
+        try:
+            if path.exists():
+                size = path.stat().st_size
+                if size < pos:  # log truncated/rotated
+                    pos = 0
+                if size > pos:
+                    with path.open() as fh:
+                        fh.seek(pos)
+                        for line in fh:
+                            _ingest_log_line(state, line)
+                        pos = fh.tell()
+        except OSError:
+            pass
+        stop.wait(1.0)
+
+
+def _ingest_log_line(state: State, line: str):
+    parts = line.rstrip("\n").split("\t", 2)
+    if len(parts) < 2:
+        return
+    ts_str, kind = parts[0], parts[1]
+    msg = parts[2] if len(parts) > 2 else ""
+    label, klass = _LOG_KIND.get(kind, (kind.upper(), "CONN"))
+    try:
+        ts = datetime.fromisoformat(ts_str)
+    except ValueError:
+        ts = datetime.now()
+    with state.lock:
+        state.events.append((ts, label, msg))
+
+
+def journal_tail(state: State, stop: threading.Event):
+    """Tail cups-proxy journal (only relevant in the LABEL_USE_CUPS fallback)."""
+    try:
+        p = subprocess.Popen(
+            ["journalctl", "-u", "cups-proxy", "-n", "50", "-f", "--no-pager", "-o", "short-iso"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        )
+    except Exception as e:
+        with state.lock:
+            state.events.append((datetime.now(), "WARN", f"journal tail failed: {e}"))
+        return
+    try:
+        for line in p.stdout:
+            if stop.is_set():
+                break
+            line = line.rstrip()
+            ts = parse_iso_ts(line)
+            if "XML modified" in line and "cutmode>full" in line:
+                with state.lock:
+                    state.events.append((ts, "CUT", "auto-cut injected"))
+            elif "Picture received" in line:
+                with state.lock:
+                    state.events.append((ts, "PRINT", "picture forwarded to printer"))
+            elif "Connection from" in line:
+                with state.lock:
+                    state.events.append((ts, "CONN", line.split("Connection from")[-1].strip()))
+    finally:
+        p.terminate()
+
+
+def parse_iso_ts(line: str) -> datetime:
+    parts = line.split(" ", 1)
+    try:
+        return datetime.fromisoformat(parts[0])
+    except Exception:
+        return datetime.now()
+
+
+def build_status_panel(state: State) -> Panel:
+    with state.lock:
+        status = state.status_xml
+        cfg = state.config_xml
+        err = state.error
+        last = state.last_poll
+        queue = state.queue_text
+
+    if err and not status:
+        return Panel(
+            Text(f"unreachable: {err}", style="red"),
+            title="status",
+            border_style="red",
+        )
+
+    def f(blob, tag, default="?"):
+        return xml_field(blob, tag) or default
+
+    state_str = f(status, "print_state")
+    job_stage = f(status, "print_job_stage")
+    job_err = f(status, "print_job_error")
+    remain = f(status, "remain")
+    initial = f(cfg, "media_length_initial")
+    prints = f(status, "print_num")
+    online = f(status, "online")
+
+    try:
+        pct = float(remain) / float(initial) * 100
+    except Exception:
+        pct = 0.0
+
+    state_color = {
+        "IDLE": "green",
+        "BUSY": "yellow",
+        "ERROR": "red",
+    }.get(state_str, "white")
+
+    # Tape bar
+    bar_color = "green" if pct > 25 else ("yellow" if pct > 10 else "red")
+    bar = ProgressBar(total=100, completed=pct, width=40, complete_style=bar_color)
+    tape_line = Table.grid(padding=(0, 1))
+    tape_line.add_column(style="dim", no_wrap=True)
+    tape_line.add_column(no_wrap=True)
+    tape_line.add_column(style="bold", no_wrap=True)
+    tape_line.add_column(style="dim")
+    tape_line.add_row("tape", bar, f"{pct:5.1f}%", f"({remain}\" of {initial}\")")
+
+    tbl = Table.grid(padding=(0, 2))
+    tbl.add_column(style="dim", justify="right")
+    tbl.add_column()
+    tbl.add_row("state", Text(state_str, style=state_color))
+    tbl.add_row("last job", Text(f"{job_stage} (err: {job_err})",
+                                  style="green" if job_stage == "SUCCESS" else "yellow"))
+    tbl.add_row("prints (this cassette)", prints)
+    tbl.add_row("online", Text(online, style="green" if online == "1" else "red"))
+    tbl.add_row("", "")
+    tbl.add_row("cassette", f"{f(cfg, 'topcoat')} / {f(cfg, 'adhesive')}, "
+                            f"{f(cfg, 'width_inches')}\" x {f(cfg, 'media_length_initial')}\"")
+    tbl.add_row("media id", f(cfg, "media_id"))
+    tbl.add_row("cassette s/n", f(cfg, "cassette_sn"))
+    tbl.add_row("", "")
+    tbl.add_row("model", f"Brother VC-500W ({f(cfg, 'model_name')})")
+    tbl.add_row("serial", f(cfg, "serial_number"))
+    tbl.add_row("firmware", f(cfg, "fw_version_number"))
+    tbl.add_row("mac", f(cfg, "wlan0_mac_address"))
+    tbl.add_row("dpi", f(cfg, "crossweb_dpi"))
+
+    sections = [tape_line, Text(""), tbl]
+    if USE_CUPS:
+        queue_lines = queue.splitlines() if queue else ["(empty)"]
+        queue_tbl = Table.grid(padding=(0, 1))
+        queue_tbl.add_column(style="dim")
+        for line in queue_lines[:5]:
+            queue_tbl.add_row(line)
+        sections += [Text(""), Text("cups queue", style="dim bold"), queue_tbl]
+
+    body = Group(*sections)
+    age = time.time() - last if last else 0
+    mode = "cups" if USE_CUPS else "native"
+    title = f"brother @ {PRINTER_IP}  ·  {mode}  (polled {age:.0f}s ago)"
+    return Panel(body, title=title, border_style=state_color)
+
+
+def build_events_panel(state: State) -> Panel:
+    with state.lock:
+        events = list(state.events)[-30:]
+    if not events:
+        return Panel(Text("(no events yet — print something)", style="dim"),
+                     title="events", border_style="blue")
+    tbl = Table.grid(padding=(0, 1))
+    tbl.add_column(style="dim", no_wrap=True)
+    tbl.add_column(no_wrap=True)
+    tbl.add_column()
+    color = {"CUT": "magenta", "PRINT": "cyan", "DONE": "green", "JOB": "green",
+             "ERROR": "red", "CONN": "dim", "WARN": "yellow"}
+    for ts, kind, msg in events:
+        tbl.add_row(ts.strftime("%H:%M:%S"),
+                    Text(kind, style=color.get(kind, "white") + " bold"),
+                    msg)
+    return Panel(tbl, title=f"events ({len(events)})", border_style="blue")
+
+
+def build_layout(state: State) -> Layout:
+    lay = Layout()
+    lay.split_column(
+        Layout(name="header", size=1),
+        Layout(name="body"),
+        Layout(name="footer", size=1),
+    )
+    lay["body"].split_row(
+        Layout(name="status", ratio=1),
+        Layout(name="events", ratio=1),
+    )
+    lay["header"].update(
+        Align.center(Text("lazy-brother — Brother VC-500W", style="bold"))
+    )
+    lay["status"].update(build_status_panel(state))
+    lay["events"].update(build_events_panel(state))
+    lay["footer"].update(
+        Align.center(Text("Ctrl-C to quit · refreshes every 0.5s", style="dim"))
+    )
+    return lay
+
+
+def main():
+    state = State()
+    stop = threading.Event()
+    threads = [
+        threading.Thread(target=poll_loop, args=(state, stop), daemon=True),
+        threading.Thread(target=print_log_tail, args=(state, stop), daemon=True),
+    ]
+    if USE_CUPS:
+        # In the CUPS fallback, surface cups-proxy cut/forward events too.
+        threads.append(threading.Thread(target=journal_tail, args=(state, stop), daemon=True))
+    for t in threads:
+        t.start()
+
+    # Wait briefly for first poll
+    time.sleep(0.3)
+
+    try:
+        with Live(build_layout(state), refresh_per_second=REFRESH_HZ, screen=True, console=console) as live:
+            while True:
+                time.sleep(1.0 / REFRESH_HZ)
+                live.update(build_layout(state))
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop.set()
+
+
+if __name__ == "__main__":
+    main()

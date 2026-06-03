@@ -1,0 +1,4 @@
+# Generated/cached artifacts — regenerated on demand, not source.
+cache/
+__pycache__/
+*.pyc

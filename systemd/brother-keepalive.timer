@@ -1,0 +1,10 @@
+[Unit]
+Description=Poke the Brother VC-500W every 3 min so it stays on WiFi
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=3min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

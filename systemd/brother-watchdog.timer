@@ -1,0 +1,9 @@
+[Unit]
+Description=Brother printer queue watchdog timer
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+
+[Install]
+WantedBy=timers.target
