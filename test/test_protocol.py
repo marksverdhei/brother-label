@@ -5,12 +5,63 @@ Run: python3 test/test_protocol.py   (or pytest test/)
 """
 
 import pathlib
+import socket
 import sys
 import unittest
+from unittest import mock
 
 BIN = pathlib.Path(__file__).resolve().parent.parent / "bin"
 sys.path.insert(0, str(BIN))
 import brother_print as bp  # noqa: E402
+
+
+class FakeSocket:
+    """Scripted socket: returns queued byte-chunks from recv(), records sends."""
+
+    def __init__(self, script):
+        self.sent = []
+        self._script = list(script)
+        self._timeout = None
+
+    def settimeout(self, t):
+        self._timeout = t
+
+    def gettimeout(self):
+        return self._timeout
+
+    def sendall(self, data):
+        self.sent.append(data)
+
+    def recv(self, _n):
+        if self._script:
+            return self._script.pop(0)
+        raise socket.timeout()
+
+    def shutdown(self, _how):
+        pass
+
+    def close(self):
+        pass
+
+    # convenience: did we ever send the image bytes?
+    def sent_blob(self):
+        return b"".join(self.sent)
+
+
+class _FakeJpeg:
+    def __init__(self, data):
+        self._data = data
+
+    def read_bytes(self):
+        return self._data
+
+
+def _reply(op, code, comment, token=None):
+    tok = f"<job_token>{token}</job_token>\n" if token else ""
+    return (
+        f'<?xml version="1.0" encoding="UTF-8"?>\n<status>\n<op>{op}</op>\n'
+        f"{tok}<code>{code}</code>\n<comment>{comment}</comment>\n</status>\n"
+    ).encode()
 
 
 class XmlFieldTests(unittest.TestCase):
@@ -73,6 +124,74 @@ class BuilderTests(unittest.TestCase):
         h = bp.build_print_header("nope", 1, "full")
         speed, lpi = bp.MODES[bp.DEFAULT_MODE]
         self.assertIn(f"<speed>{speed}</speed>", h)
+
+
+class SendLogicTests(unittest.TestCase):
+    """Verify the send() safety property without hardware: image bytes are only
+    transmitted after the printer grants a lock and signals 'ready to receive',
+    and the lock is always released."""
+
+    def _run_send(self, script):
+        fake = FakeSocket(script)
+        with mock.patch.object(bp.socket, "create_connection", return_value=fake), \
+             mock.patch.object(bp, "resolve_host", return_value="1.2.3.4"), \
+             mock.patch.object(bp, "convert_to_jpeg",
+                               return_value=_FakeJpeg(b"JPEGDATA")), \
+             mock.patch.object(bp, "log_event"):
+            result = bp.send("x.png")
+        return fake, result
+
+    def test_busy_printer_sends_no_image(self):
+        # Lock rejected with "Printer busy" and no token.
+        script = [_reply("set", 2, "Printer busy")]
+        fake = FakeSocket(script)
+        with mock.patch.object(bp.socket, "create_connection", return_value=fake), \
+             mock.patch.object(bp, "resolve_host", return_value="1.2.3.4"), \
+             mock.patch.object(bp, "convert_to_jpeg",
+                               return_value=_FakeJpeg(b"JPEGDATA")), \
+             mock.patch.object(bp, "log_event"):
+            with self.assertRaises(bp.PrinterError):
+                bp.send("x.png")
+        # CRITICAL: no image bytes were ever sent.
+        self.assertNotIn(b"JPEGDATA", fake.sent_blob())
+
+    def test_not_ready_sends_no_image(self):
+        # Lock OK, but the print header is rejected (not "ready").
+        script = [
+            _reply("set", 0, "lock set successful", token="L1"),
+            _reply("print", 2, "Printer busy"),
+            b"",  # second read for ready also yields nothing
+        ]
+        fake = FakeSocket(script)
+        with mock.patch.object(bp.socket, "create_connection", return_value=fake), \
+             mock.patch.object(bp, "resolve_host", return_value="1.2.3.4"), \
+             mock.patch.object(bp, "convert_to_jpeg",
+                               return_value=_FakeJpeg(b"JPEGDATA")), \
+             mock.patch.object(bp, "log_event"):
+            with self.assertRaises(bp.PrinterError):
+                bp.send("x.png")
+        self.assertNotIn(b"JPEGDATA", fake.sent_blob())
+        # Even on failure, the lock must be released.
+        self.assertTrue(any(b"<op>cancel</op>" in s and b"L1" in s for s in fake.sent))
+
+    def test_happy_path_order(self):
+        script = [
+            _reply("set", 0, "lock set successful", token="L9"),
+            _reply("print", 0, "ready to receive"),
+            b'<?xml version="1.0"?>\n<status>\n<comment>print data received</comment>\n</status>\n',
+            _reply("cancel", 0, "lock cancel successful", token="L9"),
+        ]
+        fake, result = self._run_send(script)
+        blob = fake.sent_blob()
+        # All four phases present, in order.
+        self.assertIn(b"<op>set</op>", fake.sent[0])
+        self.assertTrue(any(b"<print>" in s for s in fake.sent))
+        self.assertIn(b"JPEGDATA", blob)
+        self.assertTrue(any(b"<op>cancel</op>" in s for s in fake.sent))
+        # Image bytes come AFTER the print header.
+        hdr_idx = next(i for i, s in enumerate(fake.sent) if b"<print>" in s)
+        img_idx = next(i for i, s in enumerate(fake.sent) if b"JPEGDATA" in s)
+        self.assertLess(hdr_idx, img_idx)
 
 
 class ModeTableTests(unittest.TestCase):
