@@ -46,6 +46,8 @@ Environment:
 - `SEARXNG_BASE` — image-search fallback (default `http://centurion:30502`).
 - `LABEL_USE_CUPS=1` — route through the dormant CUPS/qemu/proxy fallback instead
   of the native sender.
+- `BROTHER_FLIP=1` — rotate labels 180° before printing (if they come out
+  upside-down; orientation unverified until the first native print is checked).
 
 ## Components
 

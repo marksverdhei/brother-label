@@ -22,6 +22,7 @@ the working zsocket traffic via the cups-proxy journal (see docs/protocol.md).
 """
 
 import pathlib
+import os
 import re
 import socket
 import subprocess
@@ -46,9 +47,10 @@ MODES = {
 }
 DEFAULT_MODE = "vivid"
 
-# Set True if prints come out upside-down/mirrored vs. the old pipeline (which
-# ran the image through pnmflip). Confirmed on first native print.
-FLIP = False
+# Rotate 180° before printing. Orientation vs. the old pnmflip pipeline is
+# unverified on the first native print; if labels come out upside-down, set
+# BROTHER_FLIP=1 (no code change needed) and, once confirmed, flip this default.
+FLIP = os.environ.get("BROTHER_FLIP") == "1"
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CACHE = ROOT / "cache"
