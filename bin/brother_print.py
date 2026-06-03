@@ -70,13 +70,41 @@ def xml_field(blob, tag):
     return m.group(1).decode("utf-8", "replace").strip() if m else None
 
 
+_resolved = {"ip": None, "at": 0.0}
+_RESOLVE_TTL = 30.0  # seconds; cap how often we spawn avahi-resolve
+
+
 def resolve_host():
-    """Prefer the mDNS hostname; fall back to the last-known IP."""
+    """Resolve the printer's current IP, tolerating DHCP changes.
+
+    This box has no nss-mdns, so socket.getaddrinfo() can't resolve `.local` —
+    avahi-resolve is the working mDNS resolver here. Order: mDNS via avahi
+    (picks up a new DHCP IP) → getaddrinfo (in case nss-mdns gets added later)
+    → last-known static IP. Result is cached briefly to avoid hammering avahi
+    (lazy-brother polls every 2s)."""
+    now = time.monotonic()
+    if _resolved["ip"] and now - _resolved["at"] < _RESOLVE_TTL:
+        return _resolved["ip"]
+
+    ip = None
     try:
-        socket.getaddrinfo(PRINTER_HOST, PORT, proto=socket.IPPROTO_TCP)
-        return PRINTER_HOST
-    except OSError:
-        return PRINTER_IP
+        r = subprocess.run(["avahi-resolve", "-4", "-n", PRINTER_HOST],
+                           capture_output=True, text=True, timeout=3)
+        if r.returncode == 0 and r.stdout.strip():
+            ip = r.stdout.split()[-1].strip() or None
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if not ip:
+        try:
+            info = socket.getaddrinfo(PRINTER_HOST, PORT, proto=socket.IPPROTO_TCP)
+            ip = info[0][4][0]
+        except OSError:
+            pass
+    ip = ip or PRINTER_IP
+
+    _resolved["ip"] = ip
+    _resolved["at"] = now
+    return ip
 
 
 def log_event(kind, msg=""):

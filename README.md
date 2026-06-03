@@ -80,8 +80,9 @@ Installs:
   does get stuck; power-cycle only as a last resort.
 - **WiFi drops:** the printer falls off WiFi when idle. Mitigations:
   - `brother-keepalive.timer` holds the association.
-  - The driver resolves `VC-500W3904.local` (mDNS) with `192.168.8.249` as
-    fallback and re-resolves on connect failure, so a DHCP IP change is tolerated.
+  - The driver resolves `VC-500W3904.local` via **`avahi-resolve`** (this host
+    has no nss-mdns, so `getaddrinfo` can't resolve `.local`), cached 30s, with
+    `192.168.8.249` as the last-resort fallback — so a DHCP IP change is tolerated.
   - **Recommended (manual):** add a DHCP reservation on the router binding MAC
     `94:8C:D7:A3:C4:BF` → `192.168.8.249` so the IP never changes.
 
