@@ -316,15 +316,20 @@ def _xml_field(blob: bytes, tag: str) -> str | None:
 
 
 def cmd_status(args):
-    print("=== CUPS queue ===")
-    subprocess.run(["lpstat", "-p", PRINTER])
-    subprocess.run(["lpstat", "-W", "not-completed", "-o", PRINTER])
+    # The CUPS queue only reflects reality in the fallback path; in native mode
+    # its "idle / enabled" line is misleading (it's unrelated to the printer's
+    # actual reachability), so only show it when LABEL_USE_CUPS=1.
+    if USE_CUPS:
+        print("=== CUPS queue ===", flush=True)  # flush so it precedes lpstat's direct writes
+        subprocess.run(["lpstat", "-p", PRINTER])
+        subprocess.run(["lpstat", "-W", "not-completed", "-o", PRINTER])
+        print()
 
     try:
         status = _zink_query("/status.xml")
         config = _zink_query("/config.xml")
     except Exception as e:
-        print(f"\nzink query failed: {e}")
+        print(f"zink query failed: {e}")
         return
 
     def f(blob, tag):
@@ -337,7 +342,7 @@ def cmd_status(args):
     except (ValueError, ZeroDivisionError):
         pct = "?"
 
-    print("\n=== printer ===")
+    print("=== printer ===")
     print(f"  state          : {f(status, 'print_state')}, last job {f(status, 'print_job_stage')} (err: {f(status, 'print_job_error')})")
     print(f"  prints (cassette): {f(status, 'print_num')}")
     print(f"  tape remaining : {remain}\" of {initial}\"  ({pct})")
