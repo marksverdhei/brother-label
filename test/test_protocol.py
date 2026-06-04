@@ -5,8 +5,11 @@ Run: python3 test/test_protocol.py   (or pytest test/)
 """
 
 import pathlib
+import shutil
 import socket
+import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -202,6 +205,67 @@ class ModeTableTests(unittest.TestCase):
 
     def test_default_mode_valid(self):
         self.assertIn(bp.DEFAULT_MODE, bp.MODES)
+
+
+_HAS_MAGICK = bool(shutil.which("magick") and shutil.which("identify"))
+
+
+@unittest.skipUnless(_HAS_MAGICK, "ImageMagick (magick/identify) not installed")
+class ConvertToJpegMarginTests(unittest.TestCase):
+    """Regression coverage for the edge-clipping fix: convert_to_jpeg() must add a
+    proportional white border so content isn't clipped by the printable-area inset
+    (tape 1.022" wide, printable only 0.978"). Runs only where ImageMagick exists."""
+
+    SIZE = 100  # source square side, in px
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="bp_margin_")
+        self.src = pathlib.Path(self._tmp) / "swatch.png"
+        # Solid red square — distinct stem so it won't collide in cache/jpeg.
+        subprocess.run(
+            ["magick", "-size", f"{self.SIZE}x{self.SIZE}", "xc:red", str(self.src)],
+            check=True, capture_output=True,
+        )
+        self._outputs = []
+
+    def tearDown(self):
+        for p in self._outputs:
+            try:
+                pathlib.Path(p).unlink()
+            except OSError:
+                pass
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _dims(self, path):
+        out = subprocess.run(
+            ["identify", "-format", "%w %h", str(path)],
+            check=True, capture_output=True, text=True,
+        ).stdout.split()
+        return int(out[0]), int(out[1])
+
+    def test_margin_adds_proportional_border(self):
+        out = bp.convert_to_jpeg(self.src, flip=False, margin_pct=4)
+        self._outputs.append(out)
+        w, h = self._dims(out)
+        # 4% of 100 = 4px per side → +8px total each axis.
+        self.assertEqual((w, h), (self.SIZE + 8, self.SIZE + 8))
+
+    def test_zero_margin_leaves_size_unchanged(self):
+        out = bp.convert_to_jpeg(self.src, flip=False, margin_pct=0)
+        self._outputs.append(out)
+        self.assertEqual(self._dims(out), (self.SIZE, self.SIZE))
+
+    def test_output_is_three_channel_jpeg(self):
+        out = bp.convert_to_jpeg(self.src, flip=False, margin_pct=4)
+        self._outputs.append(out)
+        self.assertEqual(pathlib.Path(out).suffix, ".jpg")
+        fmt = subprocess.run(
+            ["identify", "-format", "%m %[channels]", str(out)],
+            check=True, capture_output=True, text=True,
+        ).stdout
+        self.assertIn("JPEG", fmt)
+        # sRGB TrueColor → 3 channels (no alpha), regardless of source.
+        self.assertIn("srgb", fmt.lower())
 
 
 if __name__ == "__main__":
