@@ -14,6 +14,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 import textwrap
 import urllib.parse
 import urllib.request
@@ -103,8 +104,13 @@ def gen_image(prompt: str, out_path: pathlib.Path):
             _gen_image_openrouter(prompt, out_path)
             return
         except urllib.error.HTTPError as e:
-            if e.code == 402:
-                print(f"OpenRouter 402 (no credits) — falling back to SearXNG image search", file=sys.stderr)
+            # Any auth/credit failure means OpenRouter is unusable — fall back to
+            # image search rather than crashing. (401 = invalid/revoked key,
+            # 402 = no credits, 403 = forbidden.)
+            if e.code in (401, 402, 403):
+                reason = {401: "invalid/revoked key", 402: "no credits", 403: "forbidden"}[e.code]
+                print(f"OpenRouter {e.code} ({reason}) — falling back to SearXNG image search",
+                      file=sys.stderr)
             else:
                 raise
     _gen_image_searxng(prompt, out_path)
@@ -128,6 +134,31 @@ def _gen_image_openrouter(prompt: str, out_path: pathlib.Path):
         die(f"image generation returned no image: {json.dumps(data)[:300]}")
     url = images[0]["image_url"]["url"]
     out_path.write_bytes(base64.b64decode(url.split(",", 1)[1]))
+
+
+def _valid_raster(data: bytes, min_side: int = 48) -> bool:
+    """True if `data` decodes as a real image at least `min_side` px per side.
+
+    Guards the image-search fallback against the obvious junk it can otherwise
+    write verbatim: HTML error pages, empty bodies, and tracking-pixel-sized
+    images. It cannot tell a *wrong* icon from a right one (that needs eyes) —
+    callers must still treat fallback results as unverified."""
+    if len(data) < 256:
+        return False
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".img") as tf:
+            tf.write(data)
+            tf.flush()
+            out = subprocess.run(
+                ["identify", "-format", "%w %h", f"{tf.name}[0]"],
+                capture_output=True, text=True,
+            )
+        if out.returncode != 0:
+            return False
+        w, h = (int(x) for x in out.stdout.split()[:2])
+        return min(w, h) >= min_side
+    except Exception:
+        return False
 
 
 def _gen_image_searxng(prompt: str, out_path: pathlib.Path):
@@ -161,7 +192,12 @@ def _gen_image_searxng(prompt: str, out_path: pathlib.Path):
             req = urllib.request.Request(img_url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=15) as resp:
                 data = resp.read()
+            if not _valid_raster(data):
+                print("  skipping (not a usable image — HTML/empty/too small)", file=sys.stderr)
+                continue
             out_path.write_bytes(data)
+            print("  NOTE: unverified image-search result — eyeball it before printing",
+                  file=sys.stderr)
             return
         except Exception as e:
             print(f"  skipping ({e})", file=sys.stderr)
