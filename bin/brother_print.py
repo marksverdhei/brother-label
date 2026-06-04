@@ -52,6 +52,12 @@ DEFAULT_MODE = "vivid"
 # BROTHER_FLIP=1 (no code change needed) and, once confirmed, flip this default.
 FLIP = os.environ.get("BROTHER_FLIP") == "1"
 
+# White safe-margin (% of each dimension) added around every image before
+# printing. The printable media (0.978") is narrower than the tape (1.022"), so
+# content at the extreme edges gets clipped; this insets it. Tunable via
+# BROTHER_MARGIN (e.g. "0" to disable, "6" for a wider margin).
+MARGIN_PCT = float(os.environ.get("BROTHER_MARGIN", "4"))
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CACHE = ROOT / "cache"
 PRINT_LOG = CACHE / "print.log"
@@ -226,23 +232,36 @@ def query(path="/status.xml", timeout=5.0, keep_awake=False):
         _close(sock)
 
 
-def convert_to_jpeg(src, flip=None):
+def convert_to_jpeg(src, flip=None, margin_pct=None):
     """Render the source image to a print-ready JPEG; return its path.
 
-    autofit=1 lets the printer scale to the tape, so we just hand it a clean,
-    correctly-oriented JPEG. Reuses ImageMagick (already a project dependency)."""
+    autofit=1 lets the printer scale to the tape, so we hand it a clean,
+    correctly-oriented JPEG with a white safe-margin so edge content isn't
+    clipped by the printable-area inset. Reuses ImageMagick."""
     src = pathlib.Path(src)
     flip = FLIP if flip is None else flip
+    margin = MARGIN_PCT if margin_pct is None else margin_pct
     out = CACHE / "jpeg" / (src.stem + ".jpg")
     out.parent.mkdir(parents=True, exist_ok=True)
+
     cmd = ["magick", str(src)]
     if flip:
         cmd += ["-rotate", "180"]
+    cmd += ["-background", "white", "-flatten"]
+    if margin > 0:
+        # Proportional white border on all sides so no content sits at the very
+        # edge (the printable media is narrower than the tape).
+        dims = subprocess.run(
+            ["identify", "-format", "%w %h", f"{src}[0]"],
+            capture_output=True, text=True, check=True,
+        ).stdout.split()
+        w, h = int(dims[0]), int(dims[1])
+        bx, by = round(w * margin / 100), round(h * margin / 100)
+        if bx or by:
+            cmd += ["-bordercolor", "white", "-border", f"{bx}x{by}"]
     # Always emit a 3-channel sRGB JPEG so the printer sees a consistent format
     # regardless of whether the source PNG was grayscale or had alpha.
-    cmd += ["-background", "white", "-flatten",
-            "-colorspace", "sRGB", "-type", "TrueColor",
-            "-quality", "92", str(out)]
+    cmd += ["-colorspace", "sRGB", "-type", "TrueColor", "-quality", "92", str(out)]
     subprocess.run(cmd, check=True, capture_output=True)
     return out
 

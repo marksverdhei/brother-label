@@ -48,6 +48,9 @@ Environment:
   of the native sender.
 - `BROTHER_FLIP=1` — rotate labels 180° before printing (if they come out
   upside-down; orientation unverified until the first native print is checked).
+- `BROTHER_MARGIN=N` — white safe-margin (% per side, default 4) added around
+  each image so edge content isn't clipped by the printable-area inset; set `0`
+  to disable or raise for a wider margin.
 
 ## Components
 
