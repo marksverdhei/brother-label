@@ -79,11 +79,18 @@ Every command is prefixed with:
 immediately releases it. If the firmware is wedged badly enough that this
 doesn't help, a physical power-cycle is the only recovery.
 
-## Sources
+## Sources & verification status
 
 - `sgrimee/labelprinter-vc500w` (fork of the m7i.org reverse-engineering work) —
   exact command templates and the lock/token mechanism.
-- `corentin-soriano/vc-500w_autocut` — the auto-cut proxy whose journal proves
-  the header/image framing.
-- Confirmed against a live capture of the working `zsocket` traffic via the
-  cups-proxy journal (see the verification notes in `README.md`).
+- `corentin-soriano/vc-500w_autocut` — the auto-cut proxy that injects
+  `<cutmode>full</cutmode>` before `</print>`, establishing the header/image
+  framing this driver follows.
+- **Confirmed working live:** this native driver has printed real labels
+  end-to-end (lock → header → JPEG → auto-cut → release) against the physical
+  VC-500W, and the lock-release-in-`finally` prevents the stuck-BUSY wedge.
+- **Not yet done:** a byte-level cross-check of our `<print>` header against the
+  working `zsocket` traffic captured from the cups-proxy journal. This is an
+  optional confidence check (the protocol already prints correctly); it stays
+  pending until a job is run through the dormant `LABEL_USE_CUPS=1` path while
+  `journalctl -u cups-proxy` is captured.
