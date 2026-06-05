@@ -197,6 +197,32 @@ class SendLogicTests(unittest.TestCase):
         self.assertLess(hdr_idx, img_idx)
 
 
+class ReadReplyTests(unittest.TestCase):
+    """_read_reply must break immediately on EOF (peer close) rather than
+    busy-looping recv()->b'' until the full timeout, and must accumulate bytes
+    across multiple recvs until a framing terminator arrives."""
+
+    def test_breaks_on_eof_without_spinning(self):
+        calls = []
+
+        class EofSocket(FakeSocket):
+            def recv(self, _n):
+                calls.append(1)
+                return b""  # peer closed: always EOF
+
+        out = bp._read_reply(EofSocket([]), timeout=5.0)
+        self.assertEqual(out, b"")
+        # The bug was treating EOF like a timeout and looping; the fix breaks at
+        # once, so recv is called exactly once (not hundreds of times for 5s).
+        self.assertEqual(len(calls), 1)
+
+    def test_accumulates_across_recvs_until_terminator(self):
+        fake = FakeSocket([b"<status>\n<code>0</code>\n", b"<comment>ok</comment>\n</status>\n"])
+        out = bp._read_reply(fake, timeout=5.0)
+        self.assertIn(b"</status>", out)
+        self.assertIn(b"<code>0</code>", out)
+
+
 class ModeTableTests(unittest.TestCase):
     def test_known_modes(self):
         self.assertEqual(bp.MODES["vivid"], (0, 317))

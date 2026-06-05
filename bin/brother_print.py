@@ -17,8 +17,9 @@ printer stayed BUSY until power-cycled. Auto-cut is native here (<cutmode>full),
 so the proxy is no longer needed.
 
 Protocol reference: sgrimee/labelprinter-vc500w, corentin-soriano/vc-500w_autocut,
-m7i.org. The exact print-header field set is confirmed against a live capture of
-the working zsocket traffic via the cups-proxy journal (see docs/protocol.md).
+m7i.org. Confirmed by real end-to-end prints; a byte-level cross-check of the
+print-header against the working zsocket traffic (cups-proxy journal) is still
+pending — see docs/protocol.md.
 """
 
 import pathlib
@@ -167,13 +168,17 @@ def _send(sock, text_or_bytes):
 
 
 def _recv_some(sock, timeout):
-    """One recv with its own timeout; returns b'' on timeout/close."""
+    """One recv with its own timeout.
+
+    Returns the bytes read, ``b''`` when the peer has closed the connection
+    (EOF), or ``None`` on timeout (connection still open, just no data yet).
+    Callers must distinguish these: treating EOF like a timeout busy-loops."""
     old = sock.gettimeout()
     sock.settimeout(timeout)
     try:
         return sock.recv(4096)
     except socket.timeout:
-        return b""
+        return None
     finally:
         sock.settimeout(old)
 
@@ -187,10 +192,12 @@ def _read_reply(sock, timeout, terminators=(b"</status>", b"</lock>", b"</config
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         chunk = _recv_some(sock, min(5.0, max(0.3, deadline - time.monotonic())))
-        if not chunk:
+        if chunk is None:        # timeout: still open, no data — keep waiting
             if buf:
                 break
             continue
+        if chunk == b"":         # EOF: peer closed — stop (don't spin on a dead socket)
+            break
         buf += chunk
         if any(t in buf for t in terminators):
             break
