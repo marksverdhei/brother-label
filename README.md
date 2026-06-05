@@ -63,7 +63,11 @@ Environment:
 - `bin/brother-watchdog` — re-enables the CUPS queue if it disables (fallback only).
 - `systemd/` — keepalive + watchdog units. `install.sh` symlinks and enables them.
 - `docs/protocol.md` — the VC-500W wire protocol.
-- `test/test_protocol.py` — hardware-free unit tests (`python3 test/test_protocol.py`).
+- `docs/RFC-001-landing-and-open-decisions.md` — open decisions blocked on Markus
+  (hardware verify, establishing `main`, OpenRouter key, scratch-PNG cleanup, DHCP).
+- `test/` — hardware-free unit tests: `test_protocol.py` (driver: XML builders,
+  framed reads, send-safety, JPEG margin) and `test_label.py` (CLI: icon-gen
+  fallback, image validation). Run all: `python3 -m unittest discover -s test`.
 
 ## Setup
 
