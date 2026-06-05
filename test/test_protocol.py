@@ -197,6 +197,43 @@ class SendLogicTests(unittest.TestCase):
         self.assertLess(hdr_idx, img_idx)
 
 
+class ResolveHostTests(unittest.TestCase):
+    """resolve_host walks avahi-resolve -> getaddrinfo -> static IP, caching the
+    result briefly. This box has no nss-mdns, so the avahi step is load-bearing."""
+
+    def setUp(self):
+        bp._resolved["ip"] = None  # clear the module-level cache between cases
+        bp._resolved["at"] = 0.0
+
+    @staticmethod
+    def _avahi(rc, out):
+        return mock.Mock(returncode=rc, stdout=out)
+
+    def test_avahi_success_wins(self):
+        with mock.patch.object(bp.subprocess, "run",
+                               return_value=self._avahi(0, "VC-500W3904.local\t192.168.8.42\n")):
+            self.assertEqual(bp.resolve_host(), "192.168.8.42")
+
+    def test_falls_back_to_getaddrinfo(self):
+        with mock.patch.object(bp.subprocess, "run", return_value=self._avahi(1, "")), \
+             mock.patch.object(bp.socket, "getaddrinfo",
+                               return_value=[(2, 1, 6, "", ("192.168.8.43", 9100))]):
+            self.assertEqual(bp.resolve_host(), "192.168.8.43")
+
+    def test_falls_back_to_static_ip_when_all_fail(self):
+        with mock.patch.object(bp.subprocess, "run", side_effect=OSError), \
+             mock.patch.object(bp.socket, "getaddrinfo", side_effect=OSError):
+            self.assertEqual(bp.resolve_host(), bp.PRINTER_IP)
+
+    def test_result_is_cached_within_ttl(self):
+        with mock.patch.object(bp.subprocess, "run",
+                               return_value=self._avahi(0, "x\t192.168.8.44\n")) as run:
+            first = bp.resolve_host()
+            second = bp.resolve_host()
+        self.assertEqual(first, second)
+        self.assertEqual(run.call_count, 1)  # second call served from cache, no re-resolve
+
+
 class ReadReplyTests(unittest.TestCase):
     """_read_reply must break immediately on EOF (peer close) rather than
     busy-looping recv()->b'' until the full timeout, and must accumulate bytes
