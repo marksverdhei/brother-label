@@ -76,3 +76,26 @@ via `avahi-resolve` + IP fallback), so this is belt-and-suspenders, not required
   `cache/print_backlog.sh` (waits-for-IDLE between jobs, stops on failure). I will
   **not** auto-run the batch — I'll print one, you confirm orientation/clipping,
   then I run the rest on your go-ahead.
+
+## D6 — Firmware update available: 2026-03-15-04 (we run 2022-07-13-22)
+
+**State (found 2026-06-11).** The printer's own updater
+(`/cgi-bin/get-versions`) offers `brotherupgrade-2026031504.tgz.gpg`
+("Latest Ver:2026-03-15-04") — nearly 4 years newer than our build. No public
+changelog exists.
+
+**Why it's tempting:** could fix the boot-into-Wireless-Direct annoyance (D-/
+task #18) and 4 years of unknown fixes.
+
+**Why it's risky:** every verified behavior of the native driver — lockless
+print acceptance, close-socket-to-cut, status codes, jpeg+autofit — was
+validated against 2022071322. New firmware could change any of it, and there
+is no documented downgrade path.
+
+**Recommendation:** do it, but deliberately: pick a moment when reprinting is
+cheap, update via the web UI (AirPrint page → CHOOSE FIRMWARE UPDATE, needs
+blue/Infrastructure mode), then re-run the verification suite (test-card print
+→ cut → gauge → IDLE) before trusting batches again. I won't trigger it
+without your go-ahead.
+
+**Needs from you:** yes/no, and when.
