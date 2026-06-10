@@ -275,17 +275,34 @@ def convert_to_jpeg(src, flip=None, margin_pct=None):
     return out
 
 
+def tape_remaining(status=None):
+    """Tape left on the roll in inches (float), or None if unreadable.
+
+    Pass an existing /status.xml blob to parse it instead of re-querying."""
+    try:
+        if status is None:
+            status = query("/status.xml")
+        val = xml_field(status, "remain")
+        return float(val) if val else None
+    except (OSError, ValueError):
+        return None
+
+
 def send(image, *, mode=DEFAULT_MODE, cut="full", timeout=IO_TIMEOUT, flip=None,
          wait_idle=True):
     """Print an image file natively, with auto-cut. No lock (see module docstring).
 
     Returns the printer's status bytes once it is back to IDLE (or the data-ack
-    bytes when wait_idle=False). Raises PrinterError on failure."""
+    bytes when wait_idle=False). Raises PrinterError on failure — including when
+    the firmware reports SUCCESS but the tape gauge never moved: the VC-500W has
+    been seen claiming IDLE/SUCCESS for a label that never physically fed, and
+    the <remain> gauge is the only signal that catches it."""
     if mode not in MODES:
         raise ValueError(f"unknown mode {mode!r}; choose from {sorted(MODES)}")
     jpeg = convert_to_jpeg(image, flip=flip).read_bytes()
 
     name = pathlib.Path(image).name
+    remain_before = tape_remaining() if wait_idle else None
     host = resolve_host()
     sock = socket.create_connection((host, PORT), timeout=CONNECT_TIMEOUT)
     sock.settimeout(timeout)
@@ -326,7 +343,21 @@ def send(image, *, mode=DEFAULT_MODE, cut="full", timeout=IO_TIMEOUT, flip=None,
     if cut and cut != "none":
         log_event("cut", "auto-cut (triggered by socket close)")
     if wait_idle:
-        return wait_for_idle()
+        status = wait_for_idle()
+        # Feed verification: SUCCESS from the firmware is not proof the label
+        # fed. Any real print moves the gauge (a 1" label eats ~1.2"), so an
+        # unmoved gauge means the job silently didn't print.
+        remain_after = tape_remaining(status)
+        if (remain_before is not None and remain_after is not None
+                and remain_after >= remain_before):
+            log_event("error",
+                      f"{name}: firmware reported success but tape gauge did "
+                      f"not move ({remain_before}\" -> {remain_after}\")")
+            raise PrinterError(
+                f"printer reported success but the tape gauge did not move "
+                f"({remain_before}\" -> {remain_after}\") — the label likely "
+                f"never fed; reprint it")
+        return status
     return ack
 
 

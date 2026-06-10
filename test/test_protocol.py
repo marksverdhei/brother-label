@@ -201,6 +201,46 @@ class SendLogicTests(unittest.TestCase):
         self.assertIn(b"JPEGDATA", fake.sent_blob())
 
 
+class FeedVerifyTests(unittest.TestCase):
+    """The firmware can report IDLE/SUCCESS for a label that never physically
+    fed (observed live 2026-06-10); the <remain> tape gauge is the only signal
+    that catches it, so send(wait_idle=True) must compare it before/after."""
+
+    _HAPPY = [
+        b'<?xml version="1.0"?>\n<status>\n<code>0</code>\n</status>\n',
+        b'<?xml version="1.0"?>\n<status>\n<code>0</code>\n</status>\n',
+    ]
+
+    @staticmethod
+    def _status(remain):
+        return f"<status>\n<print_state>IDLE</print_state>\n<remain>{remain}</remain>\n</status>".encode()
+
+    def _run(self, remain_before, remain_after):
+        fake = FakeSocket(list(self._HAPPY))
+        with mock.patch.object(bp.socket, "create_connection", return_value=fake), \
+             mock.patch.object(bp, "resolve_host", return_value="1.2.3.4"), \
+             mock.patch.object(bp, "convert_to_jpeg",
+                               return_value=_FakeJpeg(b"JPEGDATA")), \
+             mock.patch.object(bp, "query", return_value=self._status(remain_before)), \
+             mock.patch.object(bp, "wait_for_idle",
+                               return_value=self._status(remain_after)), \
+             mock.patch.object(bp, "log_event"):
+            return bp.send("x.png")
+
+    def test_unmoved_gauge_raises(self):
+        with self.assertRaisesRegex(bp.PrinterError, "gauge did not move"):
+            self._run("131.90", "131.90")
+
+    def test_decremented_gauge_is_success(self):
+        out = self._run("131.90", "130.68")
+        self.assertIn(b"130.68", out)
+
+    def test_unreadable_gauge_does_not_block(self):
+        # Best-effort: if either read fails, don't fail a print that worked.
+        out = self._run("", "130.68")
+        self.assertIn(b"130.68", out)
+
+
 class ResolveHostTests(unittest.TestCase):
     """resolve_host walks avahi-resolve -> getaddrinfo -> static IP, caching the
     result briefly. This box has no nss-mdns, so the avahi step is load-bearing."""

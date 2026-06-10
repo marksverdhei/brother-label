@@ -97,6 +97,15 @@ Installs:
   the image; `send()` does this on every job. IPP (port 631) can also print
   but offers no cut control (`finishings-supported = none`), which is why the
   driver uses port 9100.
+- **SUCCESS can lie** (observed live): the firmware sometimes reports
+  `IDLE/SUCCESS` for a label that never physically fed. The `<remain>` tape
+  gauge is the only honest signal, so `send()` reads it before and after every
+  job and raises if it didn't move ("label likely never fed; reprint it").
+- **Eject jams on consecutive long labels** (observed live): batches of long
+  (~2"+) auto-cut labels tend to throw `EJECT JAM` around the third
+  back-to-back job. Print long labels singly or clear the exit slot between
+  jobs; `label reset` clears the jam state (and may flush the queued raster as
+  a delayed print — check the gauge).
 - **WiFi drops:** the printer falls off WiFi when idle. Mitigations:
   - `brother-keepalive.timer` holds the association.
   - The driver resolves `VC-500W3904.local` via **`avahi-resolve`** (this host
