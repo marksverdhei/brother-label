@@ -106,6 +106,15 @@ Installs:
   back-to-back job. Print long labels singly or clear the exit slot between
   jobs; `label reset` clears the jam state (and may flush the queued raster as
   a delayed print — check the gauge).
+- **Power-on routine (human step):** the printer boots into **Wireless Direct
+  mode (white WiFi LED)** — its own AP, unreachable from the LAN. Hold the WiFi
+  button ~2 s per step to cycle **white → off → blue**; blue = Infrastructure
+  mode. *Blinking* blue means it's still associating; once **solid blue**,
+  `label status` answers and any agent can print immediately — no software
+  ritual, reset, or warm-up needed.
+  - **Rare edge:** if it blinks blue indefinitely and never settles, the saved
+    WiFi credentials are gone and it must be re-paired (Brother iPrint&Label
+    app or WPS) — there is no headless path to re-enter credentials.
 - **WiFi drops:** the printer falls off WiFi when idle. Mitigations:
   - `brother-keepalive.timer` holds the association.
   - The driver resolves `VC-500W3904.local` via **`avahi-resolve`** (this host
