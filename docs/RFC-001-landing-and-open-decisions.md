@@ -11,22 +11,24 @@ hardened image pipeline, docs, deployed reliability timers).
 
 ---
 
-## D1 — Hardware verification (printer is powered off)
+## D1 — Hardware verification — ✅ RESOLVED 2026-06-10
 
-**State.** The VC-500W has been off since ~2026-06-03 (a stuck-BUSY event then a
-manual power-off). It is fully off, not asleep — Wake-on-LAN does **not** wake it
-(tested from the same /24; see [[native_protocol]] memory). There is no software
-path to power it on.
+**Outcome.** Verified end-to-end on hardware: the native driver prints,
+**auto-cuts**, and returns to `IDLE/SUCCESS`. Markus confirmed the physical
+label and the cut. Orientation is correct without rotation (`BROTHER_FLIP`
+stays off).
 
-**Armed.** A background watcher (`cache/verify_print.py`, 7-day window, polls
-`:9100` every 30s) will, the moment the printer reports `IDLE`, print the
-SATA-cable label via the native driver and confirm a return to `IDLE` (no-wedge
-proof). Output lands in its task log; I report the result automatically.
+Getting there required two protocol corrections (now in `docs/protocol.md` and
+the driver): print jobs are **lockless** (taking the lock without embedding the
+job_token in the `<print>` header makes the printer reject your own job as
+"busy" — the cause of the long busy saga), and **the auto-cut is triggered by
+closing the data socket** after the printer acks the image. A capture of the
+working zsocket path (`cache/capture/zsocket-print-header-20260610.txt`) plus
+the Sunburn-Schematics protocol captures were the ground truth. IPP (port 631)
+was also exercised live: it prints but exposes no cut control.
 
-**Needs from you:** power the printer on whenever convenient. Then **eyeball the
-physical label** for the two things software can't self-check: orientation (set
-`BROTHER_FLIP=1` if upside-down) and edge-clipping (the `BROTHER_MARGIN=4` safe
-border should have fixed the slight clip reported earlier).
+**Residual check (cosmetic, non-blocking):** confirm the `BROTHER_MARGIN=4`
+safe border fixed the slight edge-clipping on the original identicon label.
 
 ## D2 — Establish `main` & land the work
 

@@ -4,22 +4,24 @@
 Talks the printer's XML-over-TCP protocol on port 9100 directly, replacing the
 old qemu-arm + zsocket + cups-proxy stack. A print job is:
 
-    1. <lock><op>set</op>...</lock>          -> printer returns a job_token
-    2. <print>...<cutmode>full</cutmode></print>   (metadata block, own write)
-    3. wait for "ready to receive"
-    4. raw JPEG bytes (exactly <datasize> of them)
-    5. wait for "print data received" / completion
-    6. <lock><op>cancel</op><job_token>..</job_token></lock>   <- ALWAYS release
+    1. <print>...<cutmode>full</cutmode></print>   (metadata block, own write)
+    2. wait for <status><code>0</code></status>    (any other code: abort)
+    3. raw JPEG bytes (exactly <datasize> of them)
+    4. wait for the code-0 ack ("print data received")
+    5. CLOSE THE SOCKET — this is what triggers the feed + cut cycle
+    6. poll /status.xml until print_state == IDLE  (~8-12 s)
 
-Releasing the lock in a finally block is the fix for the stuck-BUSY state: the
-old pipeline left the lock held when the process was killed mid-job, so the
-printer stayed BUSY until power-cycled. Auto-cut is native here (<cutmode>full),
-so the proxy is no longer needed.
+No <lock> is used. Locking without embedding the returned job_token inside the
+<print> header makes the printer reject our own header as code 2 "Printer busy"
+(we block ourselves), and an orphaned lock is exactly the wedge that used to
+require a power-cycle. The working zsocket backend and the USB path both print
+unlocked; we follow suit. The lock builders remain only for reset().
 
-Protocol reference: sgrimee/labelprinter-vc500w, corentin-soriano/vc-500w_autocut,
-m7i.org. Confirmed by real end-to-end prints; a byte-level cross-check of the
-print-header against the working zsocket traffic (cups-proxy journal) is still
-pending — see docs/protocol.md.
+Protocol ground truth: cups-proxy journal capture of the working zsocket path
+(docs/captures/zsocket-print-header-20260610.txt), Sunburn-Schematics/
+brother-vc500w-driver protocol captures (close-to-cut, code semantics), and
+sgrimee/labelprinter-vc500w (jpeg+autofit header, token-in-header lock variant).
+Verified against hardware 2026-06-10 — see docs/protocol.md.
 """
 
 import pathlib
@@ -48,9 +50,9 @@ MODES = {
 }
 DEFAULT_MODE = "vivid"
 
-# Rotate 180° before printing. Orientation vs. the old pnmflip pipeline is
-# unverified on the first native print; if labels come out upside-down, set
-# BROTHER_FLIP=1 (no code change needed) and, once confirmed, flip this default.
+# Rotate 180° before printing. Verified on hardware 2026-06-10: labels come out
+# correctly oriented (image top leads out of the printer) with no rotation, so
+# this stays off unless BROTHER_FLIP=1 is set explicitly.
 FLIP = os.environ.get("BROTHER_FLIP") == "1"
 
 # White safe-margin (% of each dimension) added around every image before
@@ -273,10 +275,12 @@ def convert_to_jpeg(src, flip=None, margin_pct=None):
     return out
 
 
-def send(image, *, mode=DEFAULT_MODE, cut="full", timeout=IO_TIMEOUT, flip=None):
-    """Print an image file natively, with auto-cut, releasing the lock always.
+def send(image, *, mode=DEFAULT_MODE, cut="full", timeout=IO_TIMEOUT, flip=None,
+         wait_idle=True):
+    """Print an image file natively, with auto-cut. No lock (see module docstring).
 
-    Returns the printer's final response bytes. Raises PrinterError on failure."""
+    Returns the printer's status bytes once it is back to IDLE (or the data-ack
+    bytes when wait_idle=False). Raises PrinterError on failure."""
     if mode not in MODES:
         raise ValueError(f"unknown mode {mode!r}; choose from {sorted(MODES)}")
     jpeg = convert_to_jpeg(image, flip=flip).read_bytes()
@@ -285,56 +289,66 @@ def send(image, *, mode=DEFAULT_MODE, cut="full", timeout=IO_TIMEOUT, flip=None)
     host = resolve_host()
     sock = socket.create_connection((host, PORT), timeout=CONNECT_TIMEOUT)
     sock.settimeout(timeout)
-    token = None
     image_sent = False
     log_event("start", f"{name} mode={mode} cut={cut} bytes={len(jpeg)}")
     try:
-        # 1. acquire the job lock — we MUST get a token so we can release it.
-        resp = _exchange(sock, build_lock_set(), timeout)
-        token = xml_field(resp, "job_token")
-        if not token:
-            raise PrinterError(f"could not acquire print lock: {resp[:200]!r}")
-
-        # 2. send the print metadata block (ends in </print>) and read the reply.
+        # 1. send the print metadata block (ends in </print>) and read the reply.
         hdr_resp = _exchange(sock, build_print_header(mode, len(jpeg), cut), timeout=15.0)
         code = xml_field(hdr_resp, "code")
-        comment = (xml_field(hdr_resp, "comment") or "").lower()
-        ready = "ready" in comment or "receive" in comment
-        # CRITICAL: never stream image bytes unless the printer asked for them.
+        comment = xml_field(hdr_resp, "comment") or ""
+        # CRITICAL: never stream image bytes unless the printer said code 0.
         # Declaring a datasize then not delivering is what wedges the firmware.
-        if not ready:
-            if code not in (None, "0"):
-                raise PrinterError(f"printer not ready (code {code}: {comment or hdr_resp[:160]!r})")
-            # No explicit error but no "ready" either — give it one more read.
-            more = _read_reply(sock, 8.0)
-            if "ready" not in (xml_field(more, "comment") or "").lower():
-                raise PrinterError(f"printer did not signal ready: {(hdr_resp + more)[:200]!r}")
+        # (code 2 = busy/locked, code 3 = no media, ...)
+        if code != "0":
+            raise PrinterError(
+                f"printer not ready (code {code}: {comment or hdr_resp[:160]!r})")
 
-        # 3. stream the full image (one write; all datasize bytes).
+        # 2. stream the full image (one write; all datasize bytes).
         _send(sock, jpeg)
         image_sent = True
 
-        # 4. wait for completion.
-        result = _read_reply(
-            sock, timeout,
-            terminators=(b"received", b"success", b"finished", b"</status>"),
-        )
+        # 3. wait for the data ack (another <status><code>0</code></status>).
+        ack = _read_reply(sock, timeout)
+        ack_code = xml_field(ack, "code")
+        if ack_code not in (None, "0"):
+            raise PrinterError(
+                f"print data not accepted (code {ack_code}: {ack[:160]!r})")
         log_event("done", name)
-        if cut and cut != "none":
-            log_event("cut", "auto-cut")
-        return result
     except Exception as e:
         log_event("error", f"{name}: {e} (image_sent={image_sent})")
         raise
     finally:
-        # 6. ALWAYS release the lock — this is what prevents stuck-BUSY.
-        if token:
-            try:
-                _send(sock, XML_DECL + build_unlock(token))
-                _recv_some(sock, 3.0)
-            except OSError:
-                pass
+        # 4. close the connection ALWAYS. On success this is part of the
+        # protocol: the printer only starts the feed + cut cycle once the
+        # socket closes. On failure it leaves the printer clean (no lock held).
         _close(sock)
+
+    if cut and cut != "none":
+        log_event("cut", "auto-cut (triggered by socket close)")
+    if wait_idle:
+        return wait_for_idle()
+    return ack
+
+
+def wait_for_idle(timeout=45.0, settle=3.0):
+    """Poll /status.xml until the print+cut cycle finishes (print_state IDLE).
+
+    The cut starts ~3 s after the data socket closes and the whole cycle takes
+    8-12 s; transient connection errors while the printer is mid-cut are
+    expected and retried."""
+    time.sleep(settle)
+    deadline = time.monotonic() + timeout
+    last = b""
+    while time.monotonic() < deadline:
+        try:
+            last = query("/status.xml")
+            if (xml_field(last, "print_state") or "").upper() == "IDLE":
+                return last
+        except OSError:
+            pass
+        time.sleep(2.0)
+    raise PrinterError(
+        f"printer did not return to IDLE within {timeout:.0f}s: {last[:200]!r}")
 
 
 def reset():

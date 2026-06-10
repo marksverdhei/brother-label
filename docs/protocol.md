@@ -26,29 +26,44 @@ Every command is prefixed with:
   keepalive timer omits this flag on purpose (`keep_awake=True`) to hold the WiFi
   association.
 
-## Printing (lock → print → image → release)
+## Printing (header → image → ack → **close socket to cut**)
 
 ```
-1. <lock><op>set</op><page_count>-1</page_count><job_timeout>99</job_timeout></lock>
-      → response contains <job_token>…</job_token>
-
-2. <print>
+1. <print>
    <mode>vivid</mode><speed>0</speed><lpi>317</lpi>
    <width>0</width><height>0</height>
    <dataformat>jpeg</dataformat><autofit>1</autofit>
    <datasize>N</datasize>
    <cutmode>full</cutmode>
    </print>
-      → response: <status><code>0</code><comment>ready to receive</comment></status>
+      → response: <status><code>0</code></status>
+        (sometimes with <comment>ready to receive</comment>; gate on code 0,
+         NOT on the comment text. code 2 = busy/locked, code 3 = no media —
+         any non-zero code: abort WITHOUT sending image data.)
 
-3. <N bytes of JPEG>
-      → response: "print data received" / "Picture received"
+2. <N bytes of JPEG>
+      → response: <status><code>0</code></status>  ("print data received")
 
-4. <lock><op>cancel</op><job_token>…</job_token></lock>      ← ALWAYS send this
+3. CLOSE THE TCP CONNECTION.
+      The printer will NOT feed or cut until the socket closes; keeping it
+      open leaves the device "waiting" with blinking lights. After close:
+      printing → feeding → cutting → IDLE, ~8-12 s total.
+
+4. Reconnect and poll /status.xml until <print_state> is IDLE.
 ```
 
 ### Key facts
 
+- **No `<lock>` for printing.** A lock mechanism exists (`<lock><op>set</op>…`
+  returns a `job_token`), but if you take the lock and then send a `<print>`
+  header *without* embedding `<job_token>` inside it, the printer rejects your
+  own header with code 2 "Printer busy" — you block yourself. This is exactly
+  the bug that stalled the first native driver. The working zsocket backend and
+  the USB path both print lockless; so do we. (sgrimee's driver shows the other
+  valid variant: lock + token inside the `<print>` block.)
+- **The socket close is part of the protocol** — it is what triggers the feed +
+  cut cycle. This is also why prints from the old CUPS path only cut when the
+  backend exited cleanly, and why IPP prints (port 631) never cut.
 - **The metadata block and the image are separate writes.** The block ends with
   `</print>` and is < 50 KB; the JPEG follows as its own (large) write. This is
   proven by the old cups-proxy: it injected `<cutmode>full</cutmode>` immediately
@@ -57,13 +72,15 @@ Every command is prefixed with:
   `…<cutmode>full</cutmode>\n</print>`.
 - **`dataformat=jpeg` + `autofit=1`** lets the printer scale the image to the
   tape. We send a clean sRGB JPEG and let the firmware fit it — no rawrgb math,
-  no netpbm tools, no qemu.
-- **The lock is why the printer used to get stuck.** `job_timeout=99` holds the
-  lock; if the client dies before step 4, the printer stays `BUSY/PROCESSING`
-  until the lock times out or it's power-cycled. The native driver releases the
-  lock in a `finally`, so interrupting a job no longer wedges the device.
+  no netpbm tools, no qemu. (The zsocket backend instead sends pre-rasterized
+  `dataformat=gray`/raw data with explicit padded `<width>/<height>` — both
+  dataformats are accepted; jpeg+autofit is far simpler for us.)
 - **`cutmode`**: `full` (cut), or `none`/omit for no cut. Auto-cut is now native;
   the cups-proxy is no longer required.
+- **IPP (port 631) can print but never cut.** The printer is AirPrint-capable
+  (`image/jpeg`/`image/png`/`image/urf` accepted via Print-Job), but
+  `finishings-supported = none` — there is no cut control. Useful as a fallback
+  path; not used by the driver.
 
 ### Mode table (from the device's own `config.xml`)
 
@@ -81,16 +98,20 @@ doesn't help, a physical power-cycle is the only recovery.
 
 ## Sources & verification status
 
+- **cups-proxy journal capture (2026-06-10,
+  `docs/captures/zsocket-print-header-20260610.txt`)** — ground-truth bytes of
+  the working zsocket path: lockless `<print>` header with raw `gray` data and
+  explicit dims. This capture is what exposed the self-lock bug.
+- `Sunburn-Schematics/brother-vc500w-driver` (`docs/protocol-captures.md`) —
+  live captures documenting the code semantics (0 ok / 2 busy / 3 no-media) and
+  the **close-socket-to-cut** behavior, plus the USB variant.
 - `sgrimee/labelprinter-vc500w` (fork of the m7i.org reverse-engineering work) —
-  exact command templates and the lock/token mechanism.
+  command templates; jpeg+autofit header; the lock variant with `job_token`
+  embedded in the `<print>` block.
 - `corentin-soriano/vc-500w_autocut` — the auto-cut proxy that injects
   `<cutmode>full</cutmode>` before `</print>`, establishing the header/image
   framing this driver follows.
-- **Confirmed working live:** this native driver has printed real labels
-  end-to-end (lock → header → JPEG → auto-cut → release) against the physical
-  VC-500W, and the lock-release-in-`finally` prevents the stuck-BUSY wedge.
-- **Not yet done:** a byte-level cross-check of our `<print>` header against the
-  working `zsocket` traffic captured from the cups-proxy journal. This is an
-  optional confidence check (the protocol already prints correctly); it stays
-  pending until a job is run through the dormant `LABEL_USE_CUPS=1` path while
-  `journalctl -u cups-proxy` is captured.
+- **Verified on hardware 2026-06-10:** this native driver printed and auto-cut
+  a real label end-to-end (header → JPEG → ack → close → cut → IDLE/SUCCESS),
+  orientation correct without rotation. The IPP path was also exercised live:
+  it prints but cannot cut.

@@ -130,71 +130,75 @@ class BuilderTests(unittest.TestCase):
 
 
 class SendLogicTests(unittest.TestCase):
-    """Verify the send() safety property without hardware: image bytes are only
-    transmitted after the printer grants a lock and signals 'ready to receive',
-    and the lock is always released."""
+    """Verify the send() safety properties without hardware: image bytes are
+    only transmitted after the printer answers the <print> header with code 0,
+    and no <lock> is ever taken for a print job — locking without embedding the
+    token in the header made the printer reject our own job as 'busy', and an
+    orphaned lock is the classic wedge. (The cut is triggered by the socket
+    close that follows; FakeSocket can't observe that, hardware verified it.)"""
 
-    def _run_send(self, script):
+    def _run_send(self, script, expect_error=False):
         fake = FakeSocket(script)
+        result = None
         with mock.patch.object(bp.socket, "create_connection", return_value=fake), \
              mock.patch.object(bp, "resolve_host", return_value="1.2.3.4"), \
              mock.patch.object(bp, "convert_to_jpeg",
                                return_value=_FakeJpeg(b"JPEGDATA")), \
              mock.patch.object(bp, "log_event"):
-            result = bp.send("x.png")
+            if expect_error:
+                with self.assertRaises(bp.PrinterError):
+                    bp.send("x.png", wait_idle=False)
+            else:
+                result = bp.send("x.png", wait_idle=False)
         return fake, result
 
     def test_busy_printer_sends_no_image(self):
-        # Lock rejected with "Printer busy" and no token.
-        script = [_reply("set", 2, "Printer busy")]
-        fake = FakeSocket(script)
-        with mock.patch.object(bp.socket, "create_connection", return_value=fake), \
-             mock.patch.object(bp, "resolve_host", return_value="1.2.3.4"), \
-             mock.patch.object(bp, "convert_to_jpeg",
-                               return_value=_FakeJpeg(b"JPEGDATA")), \
-             mock.patch.object(bp, "log_event"):
-            with self.assertRaises(bp.PrinterError):
-                bp.send("x.png")
-        # CRITICAL: no image bytes were ever sent.
+        # Header rejected with code 2 (busy / locked by another client).
+        fake, _ = self._run_send([_reply("print", 2, "Printer busy")],
+                                 expect_error=True)
+        # CRITICAL: no image bytes were ever sent — declaring a datasize and
+        # not delivering it is what wedges the firmware.
         self.assertNotIn(b"JPEGDATA", fake.sent_blob())
 
-    def test_not_ready_sends_no_image(self):
-        # Lock OK, but the print header is rejected (not "ready").
-        script = [
-            _reply("set", 0, "lock set successful", token="L1"),
-            _reply("print", 2, "Printer busy"),
-            b"",  # second read for ready also yields nothing
-        ]
-        fake = FakeSocket(script)
-        with mock.patch.object(bp.socket, "create_connection", return_value=fake), \
-             mock.patch.object(bp, "resolve_host", return_value="1.2.3.4"), \
-             mock.patch.object(bp, "convert_to_jpeg",
-                               return_value=_FakeJpeg(b"JPEGDATA")), \
-             mock.patch.object(bp, "log_event"):
-            with self.assertRaises(bp.PrinterError):
-                bp.send("x.png")
+    def test_no_media_sends_no_image(self):
+        # Header rejected with code 3 (no media loaded).
+        fake, _ = self._run_send([_reply("print", 3, "No media loaded")],
+                                 expect_error=True)
         self.assertNotIn(b"JPEGDATA", fake.sent_blob())
-        # Even on failure, the lock must be released.
-        self.assertTrue(any(b"<op>cancel</op>" in s and b"L1" in s for s in fake.sent))
 
-    def test_happy_path_order(self):
+    def test_silent_printer_sends_no_image(self):
+        # No reply at all to the header (recv times out) — abort, don't stream.
+        fake, _ = self._run_send([], expect_error=True)
+        self.assertNotIn(b"JPEGDATA", fake.sent_blob())
+
+    def test_happy_path_order_and_no_lock(self):
         script = [
-            _reply("set", 0, "lock set successful", token="L9"),
             _reply("print", 0, "ready to receive"),
-            b'<?xml version="1.0"?>\n<status>\n<comment>print data received</comment>\n</status>\n',
-            _reply("cancel", 0, "lock cancel successful", token="L9"),
+            b'<?xml version="1.0"?>\n<status>\n<code>0</code>\n'
+            b"<comment>print data received</comment>\n</status>\n",
         ]
         fake, result = self._run_send(script)
         blob = fake.sent_blob()
-        # All four phases present, in order.
-        self.assertIn(b"<op>set</op>", fake.sent[0])
-        self.assertTrue(any(b"<print>" in s for s in fake.sent))
+        # Header first, image after; the data ack is returned to the caller.
+        self.assertIn(b"<print>", fake.sent[0])
         self.assertIn(b"JPEGDATA", blob)
-        self.assertTrue(any(b"<op>cancel</op>" in s for s in fake.sent))
-        # Image bytes come AFTER the print header.
+        self.assertIn(b"print data received", result)
         hdr_idx = next(i for i, s in enumerate(fake.sent) if b"<print>" in s)
         img_idx = next(i for i, s in enumerate(fake.sent) if b"JPEGDATA" in s)
         self.assertLess(hdr_idx, img_idx)
+        # NO lock traffic — print jobs are lockless now.
+        self.assertNotIn(b"<lock>", blob)
+        self.assertNotIn(b"job_token", blob)
+
+    def test_bare_code0_header_reply_accepted(self):
+        # Firmware may answer the header with just <code>0</code>, no comment
+        # (Sunburn capture); that must count as ready-to-receive.
+        script = [
+            b'<?xml version="1.0"?>\n<status>\n<code>0</code>\n</status>\n',
+            b'<?xml version="1.0"?>\n<status>\n<code>0</code>\n</status>\n',
+        ]
+        fake, _ = self._run_send(script)
+        self.assertIn(b"JPEGDATA", fake.sent_blob())
 
 
 class ResolveHostTests(unittest.TestCase):

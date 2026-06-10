@@ -11,7 +11,7 @@ on port 9100. No CUPS, no qemu, no proxy in the print path.
 
 ```
 label {print|icon|drawer|text|tag}  →  brother_print.send(jpeg, mode, cut)  →  printer:9100
-                                          (lock → print header → JPEG → release lock)
+                                          (print header → JPEG → ack → socket close ⇒ cut)
 label {status|waybar} / lazy-brother →  brother_print.query("/status.xml")   →  printer:9100
 ```
 
@@ -46,16 +46,17 @@ Environment:
 - `SEARXNG_BASE` — image-search fallback (default `http://centurion:30502`).
 - `LABEL_USE_CUPS=1` — route through the dormant CUPS/qemu/proxy fallback instead
   of the native sender.
-- `BROTHER_FLIP=1` — rotate labels 180° before printing (if they come out
-  upside-down; orientation unverified until the first native print is checked).
+- `BROTHER_FLIP=1` — rotate labels 180° before printing. Verified 2026-06-10:
+  native prints come out correctly oriented, so this stays off by default.
 - `BROTHER_MARGIN=N` — white safe-margin (% per side, default 4) added around
   each image so edge content isn't clipped by the printable-area inset; set `0`
   to disable or raise for a wider margin.
 
 ## Components
 
-- `bin/brother_print.py` — native driver: `query`, `lock`/`unlock`, `send`,
-  `convert_to_jpeg`, `reset`, `xml_field`, mode table.
+- `bin/brother_print.py` — native driver: `query`, `send` (lockless print +
+  close-to-cut), `wait_for_idle`, `convert_to_jpeg`, `reset`, `xml_field`,
+  mode table.
 - `bin/label` — the CLI; all printing flows through `lp()` → `brother_print.send`.
 - `bin/lazy-brother` — btop-style TUI; live status + native print-event log
   (`cache/print.log`).
@@ -83,10 +84,19 @@ Installs:
 
 ## Reliability notes
 
-- **Speed:** native prints in ~3 s vs ~60 s under qemu emulation.
-- **Stuck-BUSY:** the driver always releases the job lock in a `finally`, so
-  interrupting a print no longer wedges the printer. Use `label reset` if it ever
-  does get stuck; power-cycle only as a last resort.
+- **Speed:** data transfer is seconds; a full print + cut cycle is ~15-30 s
+  end-to-end (vs ~60 s+ under qemu emulation, which also routinely wedged the
+  device).
+- **Stuck-BUSY:** print jobs take no `<lock>` at all — an orphaned lock was the
+  classic wedge, and holding a lock without embedding its token in the print
+  header makes the printer reject *your own* job as "busy". Aborts never send
+  partial image data and the socket always closes, so an interrupted print no
+  longer wedges the printer. Use `label reset` if it ever does get stuck;
+  power-cycle as a last resort.
+- **Auto-cut** is triggered by closing the data socket after the printer acks
+  the image; `send()` does this on every job. IPP (port 631) can also print
+  but offers no cut control (`finishings-supported = none`), which is why the
+  driver uses port 9100.
 - **WiFi drops:** the printer falls off WiFi when idle. Mitigations:
   - `brother-keepalive.timer` holds the association.
   - The driver resolves `VC-500W3904.local` via **`avahi-resolve`** (this host
