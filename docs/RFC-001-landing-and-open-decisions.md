@@ -30,19 +30,14 @@ was also exercised live: it prints but exposes no cut control.
 **Residual check (cosmetic, non-blocking):** confirm the `BROTHER_MARGIN=4`
 safe border fixed the slight edge-clipping on the original identicon label.
 
-## D2 — Establish `main` & land the work
+## D2 — Establish `main` & land the work — ✅ RESOLVED 2026-06-11 (local)
 
-**State.** The repo started empty; all 11 commits live on `feat/native-driver`.
-There is no `main`/`master` branch and no remote.
+`main` established from the hardware-verified `feat/native-driver` HEAD and
+checked out as the working branch, under Markus's blanket go-ahead
+("do the rest"). Future work: feature branches off `main`.
 
-**Recommendation:** after D1 passes, establish `main` from the verified
-`feat/native-driver` HEAD (`git branch main feat/native-driver` or fast-forward
-merge), and make it the default. Holding until verification so unverified code
-isn't blessed as trunk. If you want a GitHub remote too, that's an outward action
-I won't take without your say-so.
-
-**Needs from you:** confirm the branch strategy (establish `main` post-verify?),
-and whether to add a remote.
+**Still open (outward action, needs explicit say-so):** whether to add a GitHub
+remote and push.
 
 ## D3 — OpenRouter key is dead
 
@@ -57,18 +52,12 @@ eyeball. I refetched + visually verified the two junk drawer icons by hand.
 
 **Needs from you:** rotate/replace the OpenRouter key so clean image-gen returns.
 
-## D4 — Scratch PNGs committed to `test/` (≈768K) — tracked as task #16
+## D4 — Scratch PNGs committed to `test/` (≈768K) — ✅ RESOLVED 2026-06-11
 
-**State.** The initial commit swept 5 unreferenced binary PNGs into `test/`
-(`generated_raw.png` alone is 676K). None are used by the test suite.
-
-**Recommendation:** `git rm` `generated_raw.png` + `generated_label.png` (clearly
-scratch dumps) and add `test/*.png` to `.gitignore`; optionally keep the tiny
-`hello.png` / `cut_test.png` as manual print fixtures. Not deleting unilaterally —
-these pre-existed in the working tree (I didn't author the images). Cheap to do
-as part of the D2 landing.
-
-**Needs from you:** OK to remove them (or which to keep)?
+All 5 unreferenced PNGs removed (`git rm`) with Markus's blanket go-ahead
+("do the rest"); verified nothing outside this RFC referenced them and the
+test suite passes without them. `test/*.png` added to `.gitignore` so scratch
+prints can't sneak back in.
 
 ## D5 — DHCP reservation (router) — reliability
 

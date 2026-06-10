@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import urllib.parse
 import urllib.request
 
@@ -352,6 +353,30 @@ def _xml_field(blob: bytes, tag: str) -> str | None:
 
 
 def cmd_status(args):
+    if getattr(args, "json", False):
+        out = {"reachable": False, "idle": False}
+        try:
+            status = _zink_query("/status.xml")
+            config = _zink_query("/config.xml")
+        except Exception as e:
+            out["error"] = str(e)
+            print(json.dumps(out))
+            sys.exit(1)
+        remain = _xml_field(status, "remain")
+        initial = _xml_field(config, "media_length_initial")
+        out.update({
+            "reachable": True,
+            "state": _xml_field(status, "print_state"),
+            "idle": _xml_field(status, "print_state") == "IDLE",
+            "last_job_stage": _xml_field(status, "print_job_stage"),
+            "last_job_error": _xml_field(status, "print_job_error"),
+            "tape_remaining_in": float(remain) if remain else None,
+            "tape_initial_in": float(initial) if initial else None,
+            "prints_this_cassette": int(_xml_field(status, "print_num") or 0),
+        })
+        print(json.dumps(out))
+        sys.exit(0 if out["idle"] else 1)
+
     # The CUPS queue only reflects reality in the fallback path; in native mode
     # its "idle / enabled" line is misleading (it's unrelated to the printer's
     # actual reachability), so only show it when LABEL_USE_CUPS=1.
@@ -465,6 +490,7 @@ def cmd_send(args):
 
 def cmd_reset(args):
     """Clear a stuck job by acquiring + releasing the printer lock."""
+    before = brother_print.tape_remaining()
     try:
         status = brother_print.reset()
     except OSError as e:
@@ -474,6 +500,21 @@ def cmd_reset(args):
     print(f"reset attempted. print_state={state}, stage={stage}")
     if state != "IDLE":
         print("Still not IDLE — a physical power-cycle may be required.")
+        return
+    # After clearing an EJECT JAM the firmware sometimes flushes the jammed
+    # job's queued raster as a *delayed* print. Watch the tape gauge briefly so
+    # the caller knows whether the label already came out (don't reprint!).
+    if before is None:
+        return
+    for _ in range(8):
+        time.sleep(2)
+        now = brother_print.tape_remaining()
+        if now is not None and now < before:
+            print(f'NOTE: a queued raster flushed as a delayed print '
+                  f'(tape {before}" -> {now}") — the label came out, do NOT reprint.')
+            return
+    print('No delayed print detected (tape gauge unchanged) — '
+          'if your label never fed, reprint it.')
 
 
 def main():
@@ -521,8 +562,12 @@ def main():
     sp.set_defaults(func=cmd_tag)
     sub.add_parser("tags", help="list inventory tags").set_defaults(func=cmd_tags)
 
-    sub.add_parser("status", help="printer + queue status").set_defaults(func=cmd_status)
-    sub.add_parser("reset", help="clear a stuck print job (lock release)").set_defaults(func=cmd_reset)
+    sp = sub.add_parser("status", help="printer + queue status")
+    sp.add_argument("--json", action="store_true",
+                    help="one-line machine-readable JSON; exit 0 iff printer is idle")
+    sp.set_defaults(func=cmd_status)
+    sub.add_parser("reset", help="clear a stuck print job (also detects a delayed"
+                   " raster flush — tells you whether to reprint)").set_defaults(func=cmd_reset)
     sub.add_parser("cut", help="explain auto-cut behavior").set_defaults(func=cmd_cut)
     sub.add_parser("waybar", help="emit JSON for a waybar custom module").set_defaults(func=cmd_waybar)
 

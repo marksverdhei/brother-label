@@ -31,7 +31,10 @@ label drawer "NAME"         # icon + caption drawer label
 label tag NAME|UUID         # inventory shelf sticker
 label tags                  # list inventory tags
 label status                # printer + cassette + device status
-label reset                 # clear a stuck job (releases the printer lock)
+label status --json         # one-line JSON for agents/scripts; exit 0 iff idle
+label reset                 # clear a stuck job; reports whether the jammed
+                            #   job's raster flushed as a delayed print
+                            #   ("do NOT reprint") or not ("reprint it")
 label cut                   # explain auto-cut behavior
 label waybar                # JSON for the waybar module
 
@@ -75,6 +78,9 @@ Environment:
 ```bash
 ./install.sh        # symlink + enable systemd timers; set CUPS error policy
 ```
+
+`bin/label` and `bin/lazy-brother` are symlinked onto `~/.local/bin` so any
+agent or shell can call `label …` without knowing the repo path.
 
 Installs:
 - `brother-keepalive.timer` — every 3 min, holds the printer on the network.

@@ -6,6 +6,11 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UNIT_DIR=/etc/systemd/system
 
+echo "==> Symlinking CLI onto ~/.local/bin"
+mkdir -p "$HOME/.local/bin"
+ln -sf "$REPO/bin/label" "$HOME/.local/bin/label"
+ln -sf "$REPO/bin/lazy-brother" "$HOME/.local/bin/lazy-brother"
+
 echo "==> Installing systemd units from $REPO/systemd"
 for unit in brother-keepalive.service brother-keepalive.timer \
             brother-watchdog.service brother-watchdog.timer; do
