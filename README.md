@@ -111,15 +111,18 @@ Installs:
   `IDLE/SUCCESS` for a label that never physically fed. The `<remain>` tape
   gauge is the only honest signal, so `send()` reads it before and after every
   job and raises if it didn't move ("label likely never fed; reprint it").
-- **Eject jams on consecutive labels** (observed live, twice across two
-  batches): every ~3rd back-to-back auto-cut job throws `EJECT JAM` —
-  regardless of label length (0.5–1.5" labels jam too) and regardless of
-  inter-job pauses (25s and 45s both failed). Printed labels accumulating at
-  the exit slot appear to block the next eject: **remove labels from the tray
-  every 2–3 jobs**, or plan batches around a jam-clear stop. `label reset`
-  may not clear it — a hand freeing the slot usually is what fixes it, after
-  which the printer returns to IDLE on its own. The tape gauge tells you
-  whether the jammed job fed (gauge moved → don't reprint; unmoved → reprint).
+- **Eject jams on consecutive labels are intrinsic** (5 jams across 3 batches,
+  2026-06-10/11): every ~2nd–3rd back-to-back auto-cut job throws `EJECT JAM`.
+  Ruled out: label length (0.5–1.5" jams like 2"+), inter-job pauses (25s and
+  45s both jammed), and exit-tray pile-up (jammed even with a human pulling
+  each label as it dropped). Suspected cut-scrap/wear in the eject mechanism
+  or a firmware bug — the 2026-03-15-04 firmware update (RFC-001 D6) is the
+  leading fix candidate. **Plan ≤2 consecutive jobs unattended**; larger
+  batches need a human on jam-clear duty. `label reset` does not clear these —
+  only physically freeing the slot does, after which the printer returns to
+  IDLE on its own. The tape gauge tells you whether the jammed job fed (gauge
+  moved → don't reprint; unmoved → reprint) — but a label that fed *into* a
+  jam may still come out mangled, so eyeball it.
 - **Power-on routine (human step):** the printer boots into **Wireless Direct
   mode (white WiFi LED)** — its own AP, unreachable from the LAN. Hold the WiFi
   button ~2 s per step to cycle **white → off → blue**; blue = Infrastructure

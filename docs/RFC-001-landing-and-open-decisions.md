@@ -87,6 +87,13 @@ changelog exists.
 **Why it's tempting:** could fix the boot-into-Wireless-Direct annoyance (D-/
 task #18) and 4 years of unknown fixes.
 
+**Evidence strengthening the case (2026-06-11):** the consecutive-job EJECT
+JAM is now confirmed intrinsic — 5 jams across 3 batches with length, pauses,
+and exit-tray pile-up all ruled out (it jammed with a human pulling each label
+as it dropped). Batching is capped at ~2 unattended jobs until this is fixed,
+and a firmware eject bug is the leading suspect. This moves the update from
+"tempting" to "probably necessary for unattended batch printing".
+
 **Why it's risky:** every verified behavior of the native driver — lockless
 print acceptance, close-socket-to-cut, status codes, jpeg+autofit — was
 validated against 2022071322. New firmware could change any of it, and there
