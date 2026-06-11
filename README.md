@@ -63,6 +63,10 @@ Environment:
 - `bin/label` — the CLI; all printing flows through `lp()` → `brother_print.send`.
 - `bin/lazy-brother` — btop-style TUI; live status + native print-event log
   (`cache/print.log`).
+- `bin/label-sheet` — POC: pack multiple pictograms onto one strip
+  (scissor-cut along printed guides) to amortize the ~0.4–0.55"/job feed+cut
+  overhead; renders a true-physical-size preview (320 DPI → screen PPI,
+  default 94.07 = Lenovo LT2452pwC) via `show-me`. Not wired into `label` yet.
 - `bin/brother-keepalive` — pokes the printer (no `nokeepawake`) to hold WiFi.
 - `bin/brother-watchdog` — re-enables the CUPS queue if it disables (fallback only).
 - `systemd/` — keepalive + watchdog units. `install.sh` symlinks and enables them.
@@ -107,11 +111,15 @@ Installs:
   `IDLE/SUCCESS` for a label that never physically fed. The `<remain>` tape
   gauge is the only honest signal, so `send()` reads it before and after every
   job and raises if it didn't move ("label likely never fed; reprint it").
-- **Eject jams on consecutive long labels** (observed live): batches of long
-  (~2"+) auto-cut labels tend to throw `EJECT JAM` around the third
-  back-to-back job. Print long labels singly or clear the exit slot between
-  jobs; `label reset` clears the jam state (and may flush the queued raster as
-  a delayed print — check the gauge).
+- **Eject jams on consecutive labels** (observed live, twice across two
+  batches): every ~3rd back-to-back auto-cut job throws `EJECT JAM` —
+  regardless of label length (0.5–1.5" labels jam too) and regardless of
+  inter-job pauses (25s and 45s both failed). Printed labels accumulating at
+  the exit slot appear to block the next eject: **remove labels from the tray
+  every 2–3 jobs**, or plan batches around a jam-clear stop. `label reset`
+  may not clear it — a hand freeing the slot usually is what fixes it, after
+  which the printer returns to IDLE on its own. The tape gauge tells you
+  whether the jammed job fed (gauge moved → don't reprint; unmoved → reprint).
 - **Power-on routine (human step):** the printer boots into **Wireless Direct
   mode (white WiFi LED)** — its own AP, unreachable from the LAN. Hold the WiFi
   button ~2 s per step to cycle **white → off → blue**; blue = Infrastructure

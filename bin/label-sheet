@@ -1,0 +1,263 @@
+#!/usr/bin/env python3
+"""label-sheet — POC: pack multiple pictograms onto one tape strip (scissor-cut).
+
+Tape-sparing mode: instead of one auto-cut job per sticker (~0.4-0.6" of
+feed/cut overhead each), compose N tiles into ONE strip, print it as a single
+job, and cut the tiles apart by hand along printed guides. Best suited to
+wireframe/line-art glyphs where hand-cut edges don't matter.
+
+Real-size grounding
+-------------------
+Everything is composed at the printer's native 320 DPI on a 320 px == 1.000"
+nominal tape width. The preview (--show) renders at the Lenovo LT2452pwC's
+~94.07 PPI (0.27 mm pixel pitch) so the strip appears on screen at PHYSICAL
+size — hold the actual tape against the screen to sanity-check. Override with
+SCREEN_PPI for a different monitor.
+
+The first printed strip includes a ruler edge (ticks every 0.25") so the true
+effective scale of autofit can be measured once and corrected here if needed.
+
+Usage:
+  label-sheet --demo                     # 6 wireframe glyphs, preview only
+  label-sheet img1.png img2.png ...      # pack given images, preview
+  label-sheet ... --tile 0.45 --print    # actually print the strip
+"""
+import argparse
+import base64
+import io
+import math
+import os
+import pathlib
+import subprocess
+import sys
+
+from PIL import Image, ImageDraw
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+CACHE = REPO / "cache"
+
+PRINT_DPI = 320            # printer native resolution
+TAPE_W_IN = 1.0            # nominal tape width
+TAPE_W_PX = round(TAPE_W_IN * PRINT_DPI)          # 320
+EDGE_PX = 8                # built-in white safe border (replaces BROTHER_MARGIN)
+GUIDE = (187, 187, 187)    # light gray cut guides — visible, not dominant
+SCREEN_PPI = float(os.environ.get("SCREEN_PPI", "94.07"))  # Lenovo LT2452pwC
+
+
+# --- composition -------------------------------------------------------------
+def fit_tile(img, box_px):
+    """Contain-fit an image into a square tile box on white."""
+    tile = Image.new("RGB", (box_px, box_px), "white")
+    img = img.convert("RGBA")
+    img.thumbnail((box_px - 4, box_px - 4), Image.LANCZOS)
+    bg = Image.new("RGBA", img.size, "white")
+    bg.alpha_composite(img)
+    tile.paste(bg.convert("RGB"),
+               ((box_px - img.width) // 2, (box_px - img.height) // 2))
+    return tile
+
+
+def dashed_line(draw, xy0, xy1, color=GUIDE, dash=5, gap=5):
+    x0, y0 = xy0
+    x1, y1 = xy1
+    length = math.hypot(x1 - x0, y1 - y0)
+    if length == 0:
+        return
+    ux, uy = (x1 - x0) / length, (y1 - y0) / length
+    pos = 0.0
+    while pos < length:
+        end = min(pos + dash, length)
+        draw.line([(x0 + ux * pos, y0 + uy * pos),
+                   (x0 + ux * end, y0 + uy * end)], fill=color, width=1)
+        pos = end + gap
+
+
+def compose(images, tile_in, ruler=True):
+    """Shelf-pack square tiles onto the strip; return (PIL image, stats)."""
+    tile_px = round(tile_in * PRINT_DPI)
+    ruler_px = 14 if ruler else 0
+    usable = TAPE_W_PX - 2 * EDGE_PX - ruler_px
+    cols = max(1, usable // tile_px)
+    rows = math.ceil(len(images) / cols)
+    grid_w = cols * tile_px
+    grid_h = rows * tile_px
+    strip_h = grid_h + 2 * EDGE_PX
+
+    strip = Image.new("RGB", (TAPE_W_PX, strip_h), "white")
+    draw = ImageDraw.Draw(strip)
+    ox = EDGE_PX + ruler_px + (usable - grid_w) // 2
+    oy = EDGE_PX
+
+    for i, img in enumerate(images):
+        r, c = divmod(i, cols)
+        strip.paste(fit_tile(img, tile_px), (ox + c * tile_px, oy + r * tile_px))
+
+    # cut guides: outer frame solid-thin, inner separators dashed
+    draw.rectangle([ox, oy, ox + grid_w - 1, oy + grid_h - 1], outline=GUIDE)
+    for c in range(1, cols):
+        dashed_line(draw, (ox + c * tile_px, oy), (ox + c * tile_px, oy + grid_h))
+    for r in range(1, rows):
+        dashed_line(draw, (ox, oy + r * tile_px), (ox + grid_w, oy + r * tile_px))
+
+    if ruler:
+        # calibration ruler along the left edge: tick every 0.25", long every 1"
+        step = PRINT_DPI // 4
+        for y in range(oy, oy + grid_h + 1, step):
+            major = ((y - oy) % PRINT_DPI) == 0
+            draw.line([(EDGE_PX, y), (EDGE_PX + (10 if major else 5), y)],
+                      fill="black", width=2 if major else 1)
+
+    stats = {
+        "cols": cols, "rows": rows, "tiles": len(images),
+        "strip_in": strip_h / PRINT_DPI,
+        "singly_in": len(images) * (tile_in + 0.55),  # measured per-job overhead
+    }
+    return strip, stats
+
+
+# --- demo glyphs (wireframe line-art, no network needed) ---------------------
+def demo_glyphs(size=256, w=7):
+    """Six simple wireframe pictograms drawn with PIL."""
+    def canvas():
+        img = Image.new("RGB", (size, size), "white")
+        return img, ImageDraw.Draw(img)
+
+    out = []
+    # power symbol
+    img, d = canvas()
+    d.arc([40, 50, 216, 226], start=-60, end=240, fill="black", width=w)
+    d.line([128, 20, 128, 120], fill="black", width=w)
+    out.append(img)
+    # up arrow
+    img, d = canvas()
+    d.line([128, 30, 128, 226], fill="black", width=w)
+    d.line([128, 30, 60, 110], fill="black", width=w)
+    d.line([128, 30, 196, 110], fill="black", width=w)
+    out.append(img)
+    # wifi arcs
+    img, d = canvas()
+    for i, r in enumerate([40, 80, 120]):
+        d.arc([128 - r, 188 - r, 128 + r, 188 + r], start=215, end=325,
+              fill="black", width=w)
+    d.ellipse([118, 178, 138, 198], fill="black")
+    out.append(img)
+    # plug
+    img, d = canvas()
+    d.rounded_rectangle([78, 90, 178, 170], radius=16, outline="black", width=w)
+    d.line([103, 30, 103, 90], fill="black", width=w)
+    d.line([153, 30, 153, 90], fill="black", width=w)
+    d.line([128, 170, 128, 226], fill="black", width=w)
+    out.append(img)
+    # gear (circle + spokes)
+    img, d = canvas()
+    d.ellipse([68, 68, 188, 188], outline="black", width=w)
+    d.ellipse([108, 108, 148, 148], outline="black", width=w)
+    for a in range(0, 360, 45):
+        x = 128 + 78 * math.cos(math.radians(a))
+        y = 128 + 78 * math.sin(math.radians(a))
+        x2 = 128 + 56 * math.cos(math.radians(a))
+        y2 = 128 + 56 * math.sin(math.radians(a))
+        d.line([x2, y2, x, y], fill="black", width=w + 4)
+    out.append(img)
+    # scissors
+    img, d = canvas()
+    d.ellipse([50, 170, 100, 220], outline="black", width=w)
+    d.ellipse([156, 170, 206, 220], outline="black", width=w)
+    d.line([85, 175, 190, 40], fill="black", width=w)
+    d.line([171, 175, 66, 40], fill="black", width=w)
+    out.append(img)
+    return out
+
+
+# --- real-size preview --------------------------------------------------------
+def write_preview(strip, stats, out_html):
+    scale = SCREEN_PPI / PRINT_DPI
+    disp_w = round(strip.width * scale)
+    disp_h = round(strip.height * scale)
+    buf = io.BytesIO()
+    strip.save(buf, "PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    inch = SCREEN_PPI
+    cc_w, cc_h = 85.6 / 25.4 * inch, 54.0 / 25.4 * inch  # credit card
+    html = f"""<!doctype html><meta charset=utf-8>
+<body style="background:#1e1e2e;color:#cdd6f4;font:14px sans-serif;padding:24px">
+<h2 style="margin-top:0">label-sheet — TRUE SIZE preview @ {SCREEN_PPI:.2f} PPI</h2>
+<p>Strip: <b>{strip.width}×{strip.height} px @ {PRINT_DPI} DPI =
+{TAPE_W_IN:.2f}" × {stats['strip_in']:.2f}"</b> &nbsp;|&nbsp;
+{stats['tiles']} tiles in {stats['cols']}×{stats['rows']} grid &nbsp;|&nbsp;
+tape cost {stats['strip_in'] + 0.55:.1f}" vs ~{stats['singly_in']:.1f}" printed singly
+(<b>saves ~{(1 - (stats['strip_in'] + 0.55) / stats['singly_in']) * 100:.0f}%</b>)</p>
+<p style="color:#f9e2af">Calibration: browser zoom MUST be 100% (Ctrl+0).
+Hold the real tape against the white strip — widths should match exactly.</p>
+<div style="display:flex;gap:32px;align-items:flex-start">
+  <div>
+    <div style="color:#888;font-size:11px">the strip (1.00" wide)</div>
+    <img src="data:image/png;base64,{b64}" width="{disp_w}" height="{disp_h}"
+         style="border:1px solid #555;background:#fff">
+  </div>
+  <div>
+    <div style="color:#888;font-size:11px">1 inch square</div>
+    <div style="width:{inch:.1f}px;height:{inch:.1f}px;border:2px solid #a6e3a1"></div>
+    <div style="color:#888;font-size:11px;margin-top:16px">credit card (85.6 × 54 mm)</div>
+    <div style="width:{cc_w:.1f}px;height:{cc_h:.1f}px;border:2px solid #89b4fa;border-radius:{3.18/25.4*inch:.0f}px"></div>
+    <div style="color:#888;font-size:11px;margin-top:16px">3-inch ruler</div>
+    <div style="position:relative;width:{3*inch:.0f}px;height:30px;border-top:2px solid #cdd6f4">
+      {''.join(f'<div style="position:absolute;left:{i*inch/4:.1f}px;top:0;width:1px;height:{14 if i % 4 == 0 else 7}px;background:#cdd6f4"></div>' for i in range(13))}
+    </div>
+  </div>
+</div></body>"""
+    out_html.write_text(html)
+
+
+# --- main ---------------------------------------------------------------------
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("images", nargs="*", help="pictogram image files to pack")
+    ap.add_argument("--demo", action="store_true",
+                    help="use 6 built-in wireframe glyphs")
+    ap.add_argument("--tile", type=float, default=0.45,
+                    help='tile size in inches (default 0.45")')
+    ap.add_argument("--no-ruler", dest="ruler", action="store_false",
+                    help="omit the calibration ruler edge")
+    ap.add_argument("--out", default=str(CACHE / "sheet" / "strip.png"))
+    ap.add_argument("--print", dest="do_print", action="store_true",
+                    help="send the strip to the printer (one job, one cut)")
+    ap.add_argument("--show", action="store_true", default=True)
+    args = ap.parse_args()
+
+    if args.demo:
+        images = demo_glyphs()
+    elif args.images:
+        images = [Image.open(p) for p in args.images]
+    else:
+        ap.error("give image files or --demo")
+
+    strip, stats = compose(images, args.tile, ruler=args.ruler)
+    out = pathlib.Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    strip.save(out)
+    print(f"strip: {out}  {strip.width}x{strip.height}px = "
+          f"{TAPE_W_IN:.2f}\" x {stats['strip_in']:.2f}\"  "
+          f"({stats['tiles']} tiles, {stats['cols']}x{stats['rows']})")
+    print(f"tape: ~{stats['strip_in'] + 0.55:.1f}\" as one job vs "
+          f"~{stats['singly_in']:.1f}\" singly "
+          f"(saves ~{(1 - (stats['strip_in'] + 0.55) / stats['singly_in']) * 100:.0f}%)")
+
+    if args.show:
+        html = out.with_suffix(".html")
+        write_preview(strip, stats, html)
+        subprocess.run(["show-me", str(html)], check=False)
+
+    if args.do_print:
+        # The strip brings its own EDGE_PX border; the driver's proportional
+        # margin would shrink it and break the real-size math.
+        os.environ["BROTHER_MARGIN"] = "0"
+        sys.path.insert(0, str(REPO / "bin"))
+        import brother_print
+        brother_print.MARGIN_PCT = 0
+        brother_print.send(str(out), mode="vivid", cut="full")
+        print("printed (one job, one auto-cut at the end of the strip)")
+
+
+if __name__ == "__main__":
+    main()
