@@ -12,9 +12,13 @@ ln -sf "$REPO/bin/label" "$HOME/.local/bin/label"
 ln -sf "$REPO/bin/lazy-brother" "$HOME/.local/bin/lazy-brother"
 
 echo "==> Installing systemd units from $REPO/systemd"
+# Copy, don't symlink: systemd loads unit files before /home is mounted, so a
+# symlink into the repo dangles at boot and the timers silently stay dead
+# (bit us on the 2026-06-09 reboot). Re-run install.sh after editing units.
 for unit in brother-keepalive.service brother-keepalive.timer \
             brother-watchdog.service brother-watchdog.timer; do
-    sudo ln -sf "$REPO/systemd/$unit" "$UNIT_DIR/$unit"
+    sudo rm -f "$UNIT_DIR/$unit"   # drop any old symlink so cp doesn't follow it
+    sudo cp "$REPO/systemd/$unit" "$UNIT_DIR/$unit"
 done
 
 echo "==> Reloading systemd and enabling timers"

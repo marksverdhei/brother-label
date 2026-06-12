@@ -69,7 +69,9 @@ Environment:
   default 94.07 = Lenovo LT2452pwC) via `show-me`. Not wired into `label` yet.
 - `bin/brother-keepalive` — pokes the printer (no `nokeepawake`) to hold WiFi.
 - `bin/brother-watchdog` — re-enables the CUPS queue if it disables (fallback only).
-- `systemd/` — keepalive + watchdog units. `install.sh` symlinks and enables them.
+- `systemd/` — keepalive + watchdog units. `install.sh` copies them into
+  `/etc/systemd/system` (copies, not symlinks: symlinked units into `/home`
+  dangle at boot before `/home` mounts and silently stay dead) and enables them.
 - `docs/protocol.md` — the VC-500W wire protocol.
 - `docs/RFC-001-landing-and-open-decisions.md` — open decisions blocked on Markus
   (hardware verify, establishing `main`, OpenRouter key, scratch-PNG cleanup, DHCP).
