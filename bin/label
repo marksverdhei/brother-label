@@ -17,6 +17,7 @@ import sys
 import tempfile
 import textwrap
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
