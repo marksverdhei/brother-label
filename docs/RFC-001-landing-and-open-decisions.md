@@ -1,13 +1,15 @@
 # RFC-001 — Landing the native driver & open decisions
 
-**Status:** Blocked on Markus (hardware + a few judgement calls)
+**Status:** Open items are Markus-only calls (router config, firmware, key, remote)
 **Author:** brother-label clerk (Claude)
-**Branch:** `feat/native-driver` (11 commits; the repo's only branch — no `main` yet, no remote)
+**Branch:** `main` (the native-driver work landed here; local-only, no remote yet)
 
 This RFC consolidates the decisions I can't make alone, each with a recommendation,
 so they're resolvable in one pass. Everything software-side that I *can* do without
 the hardware is already done and verified (native driver, 30 hardware-free tests,
-hardened image pipeline, docs, deployed reliability timers).
+hardened image pipeline, docs, deployed reliability timers). Hardware verification
+(D1) and landing `main` (D2) are now done; what remains below is genuinely
+blocked on you.
 
 ---
 
