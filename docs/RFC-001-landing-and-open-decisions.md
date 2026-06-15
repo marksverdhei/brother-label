@@ -52,7 +52,32 @@ instead of crashing, and validates downloaded images; but SearXNG results are
 unverified (this is how the captcha + AARCH64 junk got in), so they need a human
 eyeball. I refetched + visually verified the two junk drawer icons by hand.
 
-**Needs from you:** rotate/replace the OpenRouter key so clean image-gen returns.
+**Update (2026-06-12) — a working keyless backend exists.** The on-cluster
+`comfy-openai` service (`http://192.168.8.158:30385`, i.e. centurion NodePort
+30385, LAN-only, no auth) generates clean pictograms via an OpenAI-shaped
+endpoint, verified end-to-end this week on the RX470 icon and the 7-icon
+PC-parts set:
+
+```
+POST /v1/images/generations
+{"model":"z-image-turbo","prompt":"…","n":1,"size":"1024x1024","response_format":"b64_json"}
+→ data[0].b64_json   (NOT OpenRouter's images[] shape)
+```
+
+Cold start ~50–60 s (model goes cold after ~600 s idle or a titan-gemma
+reload); ~3 s warm. Avoid `qwen-image-edit` (~10 min/job). Coordinate GPU
+windows with snoop-kube.
+
+**Recommendation:** wire `z-image-turbo` as the **primary** `label icon`
+backend, demote dead OpenRouter to an optional first-try (only if a key is
+present), keep SearXNG as the unverified last resort. This resolves D3 without
+a paid key and is a contained patch to `bin/label`'s `gen_image`. I've held off
+because re-pointing the default generator is a behaviour change I'd rather you
+greenlight.
+
+**Needs from you:** either (a) say "wire comfy-openai" and I land the patch
+(+ a test), or (b) rotate/replace the OpenRouter key if you'd rather keep that
+the default. Option (a) needs no secret and no recurring cost.
 
 ## D4 — Scratch PNGs committed to `test/` (≈768K) — ✅ RESOLVED 2026-06-11
 

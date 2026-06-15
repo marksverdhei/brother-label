@@ -76,8 +76,10 @@ Environment:
 - `docs/RFC-001-landing-and-open-decisions.md` — open decisions blocked on Markus
   (hardware verify, establishing `main`, OpenRouter key, scratch-PNG cleanup, DHCP).
 - `test/` — hardware-free unit tests: `test_protocol.py` (driver: XML builders,
-  framed reads, send-safety, JPEG margin) and `test_label.py` (CLI: icon-gen
-  fallback, image validation). Run all: `python3 -m unittest discover -s test`.
+  framed reads, send-safety, JPEG margin), `test_label.py` (CLI: icon-gen
+  fallback, image validation), and `test_sheet.py` (label-sheet: packing
+  geometry, ruler reservation, fit_tile/dashed_line). Run all:
+  `python3 -m unittest discover -s test`.
 
 ## Setup
 
