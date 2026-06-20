@@ -67,39 +67,46 @@ class GenImageFallbackTests(unittest.TestCase):
     def _gen(self):
         return label.gen_image("a cable icon", pathlib.Path(tempfile.mkdtemp()) / "o.png")
 
-    def test_auth_credit_errors_fall_back_to_searxng(self):
+    def test_auth_credit_errors_fall_back_to_comfy(self):
         for code in (401, 402, 403):
             with mock.patch.object(label, "OPENROUTER_KEY", "k"), \
                  mock.patch.object(label, "_gen_image_openrouter",
                                    side_effect=_http_error(code)), \
-                 mock.patch.object(label, "_gen_image_searxng") as sx:
+                 mock.patch.object(label, "_gen_image_comfy") as gc:
                 self._gen()
-                self.assertTrue(sx.called, f"HTTP {code} should fall back to SearXNG")
+                self.assertTrue(gc.called, f"HTTP {code} should fall back to comfy")
 
     def test_other_http_error_reraises(self):
         with mock.patch.object(label, "OPENROUTER_KEY", "k"), \
              mock.patch.object(label, "_gen_image_openrouter",
                                side_effect=_http_error(500)), \
-             mock.patch.object(label, "_gen_image_searxng") as sx:
+             mock.patch.object(label, "_gen_image_comfy") as gc:
             with self.assertRaises(urllib.error.HTTPError):
                 self._gen()
-            self.assertFalse(sx.called, "a 500 must NOT silently fall back")
+            self.assertFalse(gc.called, "a 500 must NOT silently fall back")
 
     def test_success_does_not_fall_back(self):
         with mock.patch.object(label, "OPENROUTER_KEY", "k"), \
              mock.patch.object(label, "_gen_image_openrouter") as gen_or, \
-             mock.patch.object(label, "_gen_image_searxng") as sx:
+             mock.patch.object(label, "_gen_image_comfy") as gc:
             self._gen()
             self.assertTrue(gen_or.called)
-            self.assertFalse(sx.called, "no fallback when OpenRouter succeeds")
+            self.assertFalse(gc.called, "no fallback when OpenRouter succeeds")
 
-    def test_no_key_goes_straight_to_searxng(self):
+    def test_no_key_goes_straight_to_comfy(self):
         with mock.patch.object(label, "OPENROUTER_KEY", ""), \
              mock.patch.object(label, "_gen_image_openrouter") as gen_or, \
-             mock.patch.object(label, "_gen_image_searxng") as sx:
+             mock.patch.object(label, "_gen_image_comfy") as gc:
             self._gen()
             self.assertFalse(gen_or.called, "no key → don't even try OpenRouter")
-            self.assertTrue(sx.called)
+            self.assertTrue(gc.called)
+
+    def test_comfy_error_falls_back_to_searxng(self):
+        with mock.patch.object(label, "OPENROUTER_KEY", ""), \
+             mock.patch.object(label, "_gen_image_comfy", side_effect=Exception("boom")), \
+             mock.patch.object(label, "_gen_image_searxng") as sx:
+            self._gen()
+            self.assertTrue(sx.called, "comfy error should fall back to SearXNG")
 
 
 if __name__ == "__main__":
