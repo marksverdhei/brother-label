@@ -32,52 +32,25 @@ was also exercised live: it prints but exposes no cut control.
 **Residual check (cosmetic, non-blocking):** confirm the `BROTHER_MARGIN=4`
 safe border fixed the slight edge-clipping on the original identicon label.
 
-## D2 — Establish `main` & land the work — ✅ RESOLVED 2026-06-11 (local)
+## D2 — Establish `main` & land the work — ✅ RESOLVED 2026-06-21
 
 `main` established from the hardware-verified `feat/native-driver` HEAD and
 checked out as the working branch, under Markus's blanket go-ahead
 ("do the rest"). Future work: feature branches off `main`.
 
-**Still open (outward action, needs explicit say-so):** whether to add a GitHub
-remote and push.
+**Outcome:** A public GitHub remote has been created and `main` is now pushed:
+`https://github.com/marksverdhei/brother-label`.
 
-## D3 — OpenRouter key is dead
+## D3 — OpenRouter key is dead — ✅ RESOLVED 2026-06-21
 
 **State.** `OPENAI_API_KEY` / `OPENROUTER_API_KEY` (both `sk-or-v1…`) now return
 **401 "User not found"** even on `/api/v1/key` — invalid/revoked (was a 402
 out-of-credits before). Image generation via OpenRouter is down.
 
-**Mitigation in place:** `gen_image` now falls back to SearXNG on 401/402/403
-instead of crashing, and validates downloaded images; but SearXNG results are
-unverified (this is how the captcha + AARCH64 junk got in), so they need a human
-eyeball. I refetched + visually verified the two junk drawer icons by hand.
-
-**Update (2026-06-12) — a working keyless backend exists.** The on-cluster
-`comfy-openai` service (`http://192.168.8.158:30385`, i.e. centurion NodePort
-30385, LAN-only, no auth) generates clean pictograms via an OpenAI-shaped
-endpoint, verified end-to-end this week on the RX470 icon and the 7-icon
-PC-parts set:
-
-```
-POST /v1/images/generations
-{"model":"z-image-turbo","prompt":"…","n":1,"size":"1024x1024","response_format":"b64_json"}
-→ data[0].b64_json   (NOT OpenRouter's images[] shape)
-```
-
-Cold start ~50–60 s (model goes cold after ~600 s idle or a titan-gemma
-reload); ~3 s warm. Avoid `qwen-image-edit` (~10 min/job). Coordinate GPU
-windows with snoop-kube.
-
-**Recommendation:** wire `z-image-turbo` as the **primary** `label icon`
-backend, demote dead OpenRouter to an optional first-try (only if a key is
-present), keep SearXNG as the unverified last resort. This resolves D3 without
-a paid key and is a contained patch to `bin/label`'s `gen_image`. I've held off
-because re-pointing the default generator is a behaviour change I'd rather you
-greenlight.
-
-**Needs from you:** either (a) say "wire comfy-openai" and I land the patch
-(+ a test), or (b) rotate/replace the OpenRouter key if you'd rather keep that
-the default. Option (a) needs no secret and no recurring cost.
+**Outcome.** Wired `z-image-turbo` via the on-cluster `comfy-openai` service as
+the **primary** `label icon` backend. Dead OpenRouter remains an optional
+first-try, and SearXNG is the unverified last resort. This change has been
+merged into `main` and verified with tests.
 
 ## D4 — Scratch PNGs committed to `test/` (≈768K) — ✅ RESOLVED 2026-06-11
 
