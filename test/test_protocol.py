@@ -317,6 +317,64 @@ class ModeTableTests(unittest.TestCase):
 _HAS_MAGICK = bool(shutil.which("magick") and shutil.which("identify"))
 
 
+class MiscCoverageTests(unittest.TestCase):
+    def test_close_ignores_oserror(self):
+        m = mock.Mock()
+        m.shutdown.side_effect = OSError("foo")
+        m.recv.side_effect = OSError("bar")
+        m.close.side_effect = OSError("baz")
+        bp._close(m)  # Should not raise
+
+    def test_log_event_ignores_oserror(self):
+        with mock.patch("pathlib.Path.mkdir", side_effect=OSError):
+            bp.log_event("test", "msg")
+
+    def test_tape_remaining_oserror(self):
+        with mock.patch.object(bp, "query", side_effect=OSError):
+            self.assertIsNone(bp.tape_remaining())
+
+    def test_wait_for_idle_timeout(self):
+        with mock.patch.object(bp, "query", return_value=b"<print_state>BUSY</print_state>"), \
+             mock.patch("time.sleep"):
+            with self.assertRaisesRegex(bp.PrinterError, "did not return to IDLE"):
+                bp.wait_for_idle(timeout=0.1, settle=0)
+
+    def test_reset(self):
+        fake = FakeSocket([
+            b"<job_token>123</job_token>",
+            b"<status>ok</status>"
+        ])
+        with mock.patch.object(bp.socket, "create_connection", return_value=fake), \
+             mock.patch.object(bp, "resolve_host", return_value="1.2.3.4"), \
+             mock.patch.object(bp, "query", return_value=b"done"):
+            out = bp.reset()
+            self.assertEqual(out, b"done")
+
+    def test_query_keep_awake(self):
+        fake = FakeSocket([b"ok"])
+        with mock.patch.object(bp.socket, "create_connection", return_value=fake), \
+             mock.patch.object(bp, "resolve_host", return_value="1.2.3.4"):
+            bp.query(keep_awake=True)
+            self.assertNotIn(b"nokeepawake", fake.sent_blob())
+
+    def test_send_invalid_mode(self):
+        with self.assertRaisesRegex(ValueError, "unknown mode"):
+            bp.send("x.png", mode="invalid")
+
+    def test_send_invalid_ack(self):
+        # Header code 0, but ack code 1
+        fake = FakeSocket([
+            _reply("print", 0, "ready to receive"),
+            b'<?xml version="1.0"?>\n<status>\n<code>1</code>\n<comment>err</comment>\n</status>\n',
+        ])
+        with mock.patch.object(bp.socket, "create_connection", return_value=fake), \
+             mock.patch.object(bp, "resolve_host", return_value="1.2.3.4"), \
+             mock.patch.object(bp, "convert_to_jpeg", return_value=_FakeJpeg(b"JPEGDATA")), \
+             mock.patch.object(bp, "log_event"):
+            with self.assertRaisesRegex(bp.PrinterError, "print data not accepted"):
+                bp.send("x.png", wait_idle=False)
+
+
 @unittest.skipUnless(_HAS_MAGICK, "ImageMagick (magick/identify) not installed")
 class ConvertToJpegMarginTests(unittest.TestCase):
     """Regression coverage for the edge-clipping fix: convert_to_jpeg() must add a
