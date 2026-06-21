@@ -63,6 +63,9 @@ Environment:
 - `bin/label` — the CLI; all printing flows through `lp()` → `brother_print.send`.
 - `bin/lazy-brother` — btop-style TUI; live status + native print-event log
   (`cache/print.log`).
+
+  <br><img src="docs/lazy-brother.gif" width="600" alt="lazy-brother TUI demo">
+
 - `bin/label-sheet` — POC: pack multiple pictograms onto one strip
   (scissor-cut along printed guides) to amortize the ~0.4–0.55"/job feed+cut
   overhead; renders a true-physical-size preview (320 DPI → screen PPI,
