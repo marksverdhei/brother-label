@@ -107,14 +107,19 @@ def gen_image(prompt: str, out_path: pathlib.Path):
             return
         except urllib.error.HTTPError as e:
             # Any auth/credit failure means OpenRouter is unusable — fall back to
-            # image search rather than crashing. (401 = invalid/revoked key,
+            # comfy-openai instead of crashing. (401 = invalid/revoked key,
             # 402 = no credits, 403 = forbidden.)
             if e.code in (401, 402, 403):
                 reason = {401: "invalid/revoked key", 402: "no credits", 403: "forbidden"}[e.code]
-                print(f"OpenRouter {e.code} ({reason}) — falling back to SearXNG image search",
+                print(f"OpenRouter {e.code} ({reason}) — falling back to comfy-openai",
                       file=sys.stderr)
             else:
                 raise
+    try:
+        _gen_image_comfy(prompt, out_path)
+        return
+    except Exception as e:
+        print(f"comfy-openai failed ({e}) — falling back to SearXNG image search", file=sys.stderr)
     _gen_image_searxng(prompt, out_path)
 
 
@@ -136,6 +141,30 @@ def _gen_image_openrouter(prompt: str, out_path: pathlib.Path):
         die(f"image generation returned no image: {json.dumps(data)[:300]}")
     url = images[0]["image_url"]["url"]
     out_path.write_bytes(base64.b64decode(url.split(",", 1)[1]))
+
+
+def _gen_image_comfy(prompt: str, out_path: pathlib.Path):
+    body = json.dumps({
+        "model": "z-image-turbo",
+        "prompt": prompt,
+        "n": 1,
+        "size": "1024x1024",
+        "response_format": "b64_json"
+    }).encode()
+    req = urllib.request.Request(
+        "http://192.168.8.158:30385/v1/images/generations",
+        data=body,
+        headers={"Content-Type": "application/json"}
+    )
+    with urllib.request.urlopen(req, timeout=180) as resp:
+        data = json.load(resp)
+    images = data.get("data", [])
+    if not images:
+        die(f"comfy-openai returned no image: {json.dumps(data)[:300]}")
+    b64 = images[0].get("b64_json")
+    if not b64:
+        die("comfy-openai missing b64_json")
+    out_path.write_bytes(base64.b64decode(b64))
 
 
 def _valid_raster(data: bytes, min_side: int = 48) -> bool:
