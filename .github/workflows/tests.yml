@@ -1,0 +1,34 @@
+name: tests
+
+# Runs the hardware-free unit suite (test/) on every push to main and on PRs.
+# The protocol/socket tests mock the printer, so no VC-500W is needed.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python deps
+        run: pip install pytest pillow
+
+      # The ImageMagick-backed image tests self-skip when the IM7 `magick`
+      # entrypoint is absent (`_HAS_MAGICK`), which it is on the runner. The
+      # protocol / status / sheet / icon-fallback suite (all mocked, no
+      # hardware) is what CI guards here; those image tests run locally where
+      # `magick` is installed.
+      - name: Run tests
+        run: pytest test/ -v
