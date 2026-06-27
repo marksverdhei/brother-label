@@ -1,0 +1,41 @@
+name: tests
+
+# Runs the hardware-free unit suite (test/) on every push to main and on PRs.
+# The protocol/socket tests mock the printer, so no VC-500W is needed.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ImageMagick
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick
+          # The driver + image tests call the IM7-style `magick` entrypoint, but
+          # Ubuntu ships IM6 (convert/identify). Shim `magick` -> `convert` so the
+          # image tests actually run instead of skipping on `_HAS_MAGICK`.
+          if ! command -v magick >/dev/null; then
+            printf '#!/bin/sh\nexec convert "$@"\n' | sudo tee /usr/local/bin/magick >/dev/null
+            sudo chmod +x /usr/local/bin/magick
+          fi
+
+      - name: Install Python deps
+        run: pip install pytest pillow
+
+      - name: Run tests
+        run: pytest test/ -v
