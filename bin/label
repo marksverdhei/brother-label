@@ -51,6 +51,22 @@ def run(cmd, **kw):
     return subprocess.run(cmd, check=True, **kw)
 
 
+def _as_float(val):
+    """Parse an XML numeric field to float, or None if missing/garbled."""
+    try:
+        return float(val) if val else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_int(val, default=0):
+    """Parse an XML numeric field to int, or `default` if missing/garbled."""
+    try:
+        return int(val) if val else default
+    except (TypeError, ValueError):
+        return default
+
+
 def lp(path: pathlib.Path):
     """Print a file. Native AppSocket by default; CUPS queue if LABEL_USE_CUPS=1."""
     path = pathlib.Path(path)
@@ -400,9 +416,9 @@ def cmd_status(args):
             "idle": _xml_field(status, "print_state") == "IDLE",
             "last_job_stage": _xml_field(status, "print_job_stage"),
             "last_job_error": _xml_field(status, "print_job_error"),
-            "tape_remaining_in": float(remain) if remain else None,
-            "tape_initial_in": float(initial) if initial else None,
-            "prints_this_cassette": int(_xml_field(status, "print_num") or 0),
+            "tape_remaining_in": _as_float(remain),
+            "tape_initial_in": _as_float(initial),
+            "prints_this_cassette": _as_int(_xml_field(status, "print_num")),
         })
         print(json.dumps(out))
         sys.exit(0 if out["idle"] else 1)
