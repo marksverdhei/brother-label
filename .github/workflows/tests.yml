@@ -22,20 +22,13 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install ImageMagick
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y imagemagick
-          # The driver + image tests call the IM7-style `magick` entrypoint, but
-          # Ubuntu ships IM6 (convert/identify). Shim `magick` -> `convert` so the
-          # image tests actually run instead of skipping on `_HAS_MAGICK`.
-          if ! command -v magick >/dev/null; then
-            printf '#!/bin/sh\nexec convert "$@"\n' | sudo tee /usr/local/bin/magick >/dev/null
-            sudo chmod +x /usr/local/bin/magick
-          fi
-
       - name: Install Python deps
         run: pip install pytest pillow
 
+      # The ImageMagick-backed image tests self-skip when the IM7 `magick`
+      # entrypoint is absent (`_HAS_MAGICK`), which it is on the runner. The
+      # protocol / status / sheet / icon-fallback suite (all mocked, no
+      # hardware) is what CI guards here; those image tests run locally where
+      # `magick` is installed.
       - name: Run tests
         run: pytest test/ -v
