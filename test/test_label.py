@@ -11,12 +11,16 @@ image-search fallback kept grabbing junk (captcha / AARCH64 logos):
 Run: python3 test/test_label.py   (or pytest test/)
 """
 
+import io
+import json
 import pathlib
 import shutil
 import subprocess
 import tempfile
+import types
 import unittest
 import urllib.error
+from contextlib import redirect_stdout
 from importlib.machinery import SourceFileLoader
 from unittest import mock
 
@@ -107,6 +111,57 @@ class GenImageFallbackTests(unittest.TestCase):
              mock.patch.object(label, "_gen_image_searxng") as sx:
             self._gen()
             self.assertTrue(sx.called, "comfy error should fall back to SearXNG")
+
+
+class StatusJsonRobustnessTests(unittest.TestCase):
+    """`label status --json` is a machine-readable interface ("always emit JSON,
+    exit 0 iff idle"). Garbled numeric XML must not crash it with a traceback —
+    the sibling human/waybar paths already guard these coercions."""
+
+    def _run_status_json(self, status, config):
+        args = types.SimpleNamespace(json=True)
+        buf = io.StringIO()
+        with mock.patch.object(
+            label, "_zink_query",
+            side_effect=lambda p, **k: status if "status" in p else config,
+        ), redirect_stdout(buf):
+            with self.assertRaises(SystemExit) as cm:
+                label.cmd_status(args)
+        return cm.exception.code, json.loads(buf.getvalue())
+
+    def test_garbled_numeric_fields_still_emit_json(self):
+        # non-numeric <remain>/<print_num> previously raised ValueError mid-build,
+        # so no JSON was ever printed.
+        status = (b"<status><print_state>IDLE</print_state>"
+                  b"<remain>--</remain><print_num>x</print_num></status>")
+        config = b"<config><media_length_initial>120</media_length_initial></config>"
+        code, out = self._run_status_json(status, config)
+        self.assertTrue(out["reachable"])
+        self.assertTrue(out["idle"])
+        self.assertEqual(code, 0)                      # idle → exit 0
+        self.assertIsNone(out["tape_remaining_in"])    # garbled → None, not a crash
+        self.assertEqual(out["prints_this_cassette"], 0)
+        self.assertEqual(out["tape_initial_in"], 120.0)
+
+    def test_valid_numeric_fields_parse(self):
+        status = (b"<status><print_state>BUSY</print_state>"
+                  b"<remain>96.5</remain><print_num>7</print_num></status>")
+        config = b"<config><media_length_initial>120</media_length_initial></config>"
+        code, out = self._run_status_json(status, config)
+        self.assertEqual(out["tape_remaining_in"], 96.5)
+        self.assertEqual(out["tape_initial_in"], 120.0)
+        self.assertEqual(out["prints_this_cassette"], 7)
+        self.assertFalse(out["idle"])
+        self.assertEqual(code, 1)                      # not idle → exit 1
+
+    def test_missing_numeric_fields_are_none(self):
+        status = b"<status><print_state>IDLE</print_state></status>"
+        config = b"<config></config>"
+        code, out = self._run_status_json(status, config)
+        self.assertIsNone(out["tape_remaining_in"])
+        self.assertIsNone(out["tape_initial_in"])
+        self.assertEqual(out["prints_this_cassette"], 0)
+        self.assertEqual(code, 0)
 
 
 if __name__ == "__main__":
