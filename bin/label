@@ -25,7 +25,6 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import brother_print
 
 PRINTER = "brother"
-PRINTER_IP = "192.168.8.249"
 USE_CUPS = os.environ.get("LABEL_USE_CUPS") == "1"  # fallback: old qemu/proxy path
 PRINT_CUT = "full"   # set from CLI args in main()
 PRINT_MODE = brother_print.DEFAULT_MODE
@@ -131,6 +130,14 @@ def gen_image(prompt: str, out_path: pathlib.Path):
                       file=sys.stderr)
             else:
                 raise
+        except urllib.error.URLError as e:
+            # Connection-level failure (DNS, refused, timeout): OpenRouter is
+            # unreachable. comfy-openai lives on the LAN, so prefer it over
+            # crashing just because the internet path is down. HTTPError is
+            # handled above (it subclasses URLError), so this catches only the
+            # non-HTTP transport errors.
+            print(f"OpenRouter unreachable ({e.reason}) — falling back to comfy-openai",
+                  file=sys.stderr)
     try:
         _gen_image_comfy(prompt, out_path)
         return
@@ -176,10 +183,13 @@ def _gen_image_comfy(prompt: str, out_path: pathlib.Path):
         data = json.load(resp)
     images = data.get("data", [])
     if not images:
-        die(f"comfy-openai returned no image: {json.dumps(data)[:300]}")
+        # Raise (don't die): gen_image catches this to fall through to the
+        # SearXNG last resort, matching the documented backend chain. die()
+        # would exit the process and strand the fallback.
+        raise RuntimeError(f"comfy-openai returned no image: {json.dumps(data)[:300]}")
     b64 = images[0].get("b64_json")
     if not b64:
-        die("comfy-openai missing b64_json")
+        raise RuntimeError("comfy-openai missing b64_json")
     out_path.write_bytes(base64.b64decode(b64))
 
 
