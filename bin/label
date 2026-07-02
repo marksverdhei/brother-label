@@ -573,6 +573,31 @@ def cmd_reset(args):
           'if your label never fed, reprint it.')
 
 
+def sheet_argv(args):
+    """Build the argv for bin/label-sheet from parsed `sheet` args (pure; tested)."""
+    sheet_bin = pathlib.Path(__file__).resolve().parent / "label-sheet"
+    argv = [sys.executable, str(sheet_bin), *args.images]
+    if args.demo:
+        argv.append("--demo")
+    argv += ["--tile", str(args.tile)]
+    if not args.ruler:
+        argv.append("--no-ruler")
+    if args.do_print:
+        argv.append("--print")
+    return argv
+
+
+def cmd_sheet(args):
+    """Pack multiple pictograms onto one strip (one job, one cut) — tape-sparing.
+
+    Thin delegation to bin/label-sheet, which owns packing, the real-size preview,
+    and the print. Batching N stickers into a single cut sidesteps the intrinsic
+    consecutive-cut eject jam (see docs/RFC-002)."""
+    if not args.images and not args.demo:
+        die("give image files or --demo")
+    subprocess.run(sheet_argv(args), check=True)
+
+
 def main():
     global PRINT_CUT, PRINT_MODE
 
@@ -617,6 +642,17 @@ def main():
     sp.add_argument("--regen", action="store_true", help="regenerate the icon")
     sp.set_defaults(func=cmd_tag)
     sub.add_parser("tags", help="list inventory tags").set_defaults(func=cmd_tags)
+
+    sp = sub.add_parser("sheet",
+                        help="pack pictograms onto one strip (one cut) — tape-sparing (RFC-002)")
+    sp.add_argument("images", nargs="*", help="pictogram image files to pack")
+    sp.add_argument("--demo", action="store_true", help="use 6 built-in wireframe glyphs")
+    sp.add_argument("--tile", type=float, default=0.45, help='tile size in inches (default 0.45")')
+    sp.add_argument("--no-ruler", dest="ruler", action="store_false",
+                    help="omit the calibration ruler edge")
+    sp.add_argument("--print", dest="do_print", action="store_true",
+                    help="actually print the strip (one job, one cut)")
+    sp.set_defaults(func=cmd_sheet)
 
     sp = sub.add_parser("status", help="printer + queue status")
     sp.add_argument("--json", action="store_true",

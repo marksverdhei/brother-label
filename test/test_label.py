@@ -19,6 +19,7 @@ import json
 import pathlib
 import shutil
 import subprocess
+import sys
 import tempfile
 import types
 import unittest
@@ -212,6 +213,44 @@ class ComfyBackendTests(unittest.TestCase):
     def test_missing_b64_raises_not_exits(self):
         with self.assertRaises(RuntimeError):
             self._call({"data": [{"url": "http://x"}]})
+
+
+class SheetCommandTests(unittest.TestCase):
+    """`label sheet` (RFC-002) delegates to bin/label-sheet with a faithfully
+    mapped argv. All hardware-free — subprocess is mocked."""
+
+    def _args(self, **kw):
+        base = dict(images=[], demo=False, tile=0.45, ruler=True, do_print=False)
+        base.update(kw)
+        return types.SimpleNamespace(**base)
+
+    def test_argv_maps_images_and_defaults(self):
+        argv = label.sheet_argv(self._args(images=["a.png", "b.png"]))
+        self.assertEqual(argv[0], sys.executable)
+        self.assertTrue(argv[1].endswith("/label-sheet"))
+        self.assertIn("a.png", argv)
+        self.assertIn("b.png", argv)
+        self.assertEqual(argv[argv.index("--tile") + 1], "0.45")
+        # default flags off
+        for flag in ("--demo", "--no-ruler", "--print"):
+            self.assertNotIn(flag, argv)
+
+    def test_argv_flags_all_on(self):
+        argv = label.sheet_argv(self._args(demo=True, ruler=False, do_print=True, tile=0.5))
+        self.assertIn("--demo", argv)
+        self.assertIn("--no-ruler", argv)
+        self.assertIn("--print", argv)
+        self.assertEqual(argv[argv.index("--tile") + 1], "0.5")
+
+    def test_cmd_sheet_requires_input(self):
+        with self.assertRaises(SystemExit):
+            label.cmd_sheet(self._args())  # no images, no --demo
+
+    def test_cmd_sheet_invokes_subprocess(self):
+        with mock.patch.object(label.subprocess, "run") as run:
+            label.cmd_sheet(self._args(demo=True))
+            run.assert_called_once()
+            self.assertIn("--demo", run.call_args[0][0])
 
 
 if __name__ == "__main__":
