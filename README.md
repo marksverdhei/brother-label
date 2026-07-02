@@ -44,7 +44,10 @@ Print options (print/send/text/icon/drawer/tag):
 ```
 
 Environment:
-- `OPENAI_API_KEY` / `OPENROUTER_API_KEY` — OpenRouter key for icon generation.
+- `OPENAI_API_KEY` / `OPENROUTER_API_KEY` — OpenRouter key; an *optional*
+  first-try for `label icon`. Not required: icon generation falls back to the
+  on-LAN comfy-openai (`z-image-turbo`) as the primary backend, then SearXNG
+  image search as the last resort.
 - `INVENTORY_API_BASE` — inventory tags API (default `http://centurion:30191/api`).
 - `SEARXNG_BASE` — image-search fallback (default `http://centurion:30502`).
 - `LABEL_USE_CUPS=1` — route through the dormant CUPS/qemu/proxy fallback instead
@@ -161,3 +164,7 @@ The qemu/zsocket/proxy stack remains installed but unused:
 `/opt/vc-500w/proxy.py` (`cups-proxy.service`), `/opt/vc-500w/zsocket_arm64`,
 `/opt/zsb/` (ARM netpbm tools), and the `brother` CUPS queue. Set
 `LABEL_USE_CUPS=1` to use it.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
