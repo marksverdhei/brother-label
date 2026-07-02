@@ -3,8 +3,11 @@
 
 Covers the robustness logic added when the OpenRouter key died and the
 image-search fallback kept grabbing junk (captcha / AARCH64 logos):
-  - gen_image() falls back to SearXNG on auth/credit failures (401/402/403)
-    rather than crashing, and re-raises other HTTP errors.
+  - gen_image() falls back to comfy on auth/credit failures (401/402/403) and
+    on connection-level errors (OpenRouter unreachable), rather than crashing,
+    and re-raises other HTTP errors.
+  - comfy backend raises (not die()) on an empty response so the chain can
+    reach the SearXNG last resort.
   - _valid_raster() rejects the obvious junk a fallback can download verbatim
     (HTML error pages, empty bodies, sub-48px pixels).
 
@@ -33,6 +36,22 @@ _HAS_MAGICK = bool(shutil.which("magick") and shutil.which("identify"))
 
 def _http_error(code):
     return urllib.error.HTTPError("http://openrouter", code, "err", {}, None)
+
+
+class _FakeResp:
+    """Minimal urlopen() stand-in: a context manager json.load() can read."""
+
+    def __init__(self, payload):
+        self._data = json.dumps(payload).encode()
+
+    def read(self, *a):
+        return self._data
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
 
 
 def _png(size):
@@ -88,6 +107,17 @@ class GenImageFallbackTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError):
                 self._gen()
             self.assertFalse(gc.called, "a 500 must NOT silently fall back")
+
+    def test_openrouter_unreachable_falls_back_to_comfy(self):
+        # A connection-level failure (not an HTTP status) must fall back to the
+        # LAN comfy backend, not crash — the internet path being down shouldn't
+        # block the local generator.
+        with mock.patch.object(label, "OPENROUTER_KEY", "k"), \
+             mock.patch.object(label, "_gen_image_openrouter",
+                               side_effect=urllib.error.URLError("connection refused")), \
+             mock.patch.object(label, "_gen_image_comfy") as gc:
+            self._gen()
+            self.assertTrue(gc.called, "URLError should fall back to comfy")
 
     def test_success_does_not_fall_back(self):
         with mock.patch.object(label, "OPENROUTER_KEY", "k"), \
@@ -162,6 +192,26 @@ class StatusJsonRobustnessTests(unittest.TestCase):
         self.assertIsNone(out["tape_initial_in"])
         self.assertEqual(out["prints_this_cassette"], 0)
         self.assertEqual(code, 0)
+
+
+class ComfyBackendTests(unittest.TestCase):
+    """_gen_image_comfy must RAISE (not die()) on a bad response, so gen_image
+    can catch it and reach the SearXNG last resort. A SystemExit from die()
+    would escape the except-Exception and strand the fallback."""
+
+    def _call(self, payload):
+        out = pathlib.Path(tempfile.mkdtemp()) / "o.png"
+        with mock.patch.object(label.urllib.request, "urlopen",
+                               return_value=_FakeResp(payload)):
+            label._gen_image_comfy("a cable icon", out)
+
+    def test_empty_data_raises_not_exits(self):
+        with self.assertRaises(RuntimeError):
+            self._call({"data": []})
+
+    def test_missing_b64_raises_not_exits(self):
+        with self.assertRaises(RuntimeError):
+            self._call({"data": [{"url": "http://x"}]})
 
 
 if __name__ == "__main__":

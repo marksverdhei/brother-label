@@ -26,7 +26,7 @@ for the wire protocol and why the old stack misbehaved.
 label print FILE            # print an image file (auto-cut)
 label send FILE             # alias for print
 label text "TEXT"           # render + print a text label
-label icon "PROMPT"         # generate an icon (OpenRouter → SearXNG fallback) + print
+label icon "PROMPT"         # generate an icon (OpenRouter → comfy-openai → SearXNG) + print
 label drawer "NAME"         # icon + caption drawer label
 label tag NAME|UUID         # inventory shelf sticker
 label tags                  # list inventory tags
@@ -87,11 +87,13 @@ Environment:
 ## Setup
 
 ```bash
-./install.sh        # symlink + enable systemd timers; set CUPS error policy
+./install.sh        # symlink CLI, copy + enable systemd timers, set CUPS error policy
 ```
 
 `bin/label` and `bin/lazy-brother` are symlinked onto `~/.local/bin` so any
-agent or shell can call `label …` without knowing the repo path.
+agent or shell can call `label …` without knowing the repo path. The systemd
+units are **copied** into `/etc/systemd/system` (not symlinked — a symlink into
+`/home` dangles at boot before `/home` mounts, leaving the timers dead).
 
 Installs:
 - `brother-keepalive.timer` — every 3 min, holds the printer on the network.

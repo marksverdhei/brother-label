@@ -3,3 +3,8 @@ cache/
 __pycache__/
 *.pyc
 test/*.png
+
+# Test/coverage tooling output.
+.coverage
+.pytest_cache/
+htmlcov/
